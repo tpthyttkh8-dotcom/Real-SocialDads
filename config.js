@@ -8,7 +8,7 @@ export const SUPABASE_URL = 'https://bwqorwmbtllweeqnfiaw.supabase.co';
 export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3cW9yd21idGxsd2VlcW5maWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEwNTMwMzYsImV4cCI6MjEwNjYyOTAzNn0.PVFoLcbFJEo7LXX5I6ey8ej8aAnk6TEv_hYCxFJMsRQ';
 
 // Rename the app to whatever you like (your group's name?).
-export const APP_NAME = 'Real SocialDadss';
+export const APP_NAME = 'Real SocialDads';
 
 // Email sign-in (link + code) is always on. Set this to true only if you also
 // want a "Continue with GitHub" button (needs the GitHub setup in the README).
