@@ -146,7 +146,7 @@ function showLogin() {
   $app.innerHTML = `<div class="hero"><div class="hero-in">
     <div class="mini-pitch" aria-hidden="true"></div>
     <h1>${esc(APP_NAME)}</h1>
-    <p>Fair teams, final scores and proper stats for the weekly game.</p>
+    <p> Team Creation, final scores and play stats for our weekly game.</p>
     ${linkError && !ui.linkErrorShown ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one.</p>' : ''}
     <form data-form="send-link" class="login-form">
       <label class="field"><span>Your email</span>
