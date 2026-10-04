@@ -48,14 +48,27 @@ create table if not exists public.matches (
 
 alter table public.matches add column if not exists draw_rules jsonb;
 
+-- Fun-only team names and colours chosen at the draw. Empty (null) = the original "Blue" / "Orange".
+-- Stats never look at these: they only use team 'A' / team 'B'.
+alter table public.matches add column if not exists team_a_name   text
+  check (team_a_name is null or char_length(team_a_name) between 1 and 24);
+alter table public.matches add column if not exists team_b_name   text
+  check (team_b_name is null or char_length(team_b_name) between 1 and 24);
+alter table public.matches add column if not exists team_a_colour text
+  check (team_a_colour is null or team_a_colour in ('red','orange','yellow','green','blue','purple','black','white'));
+alter table public.matches add column if not exists team_b_colour text
+  check (team_b_colour is null or team_b_colour in ('red','orange','yellow','green','blue','purple','black','white'));
+
 create table if not exists public.match_players (
   match_id        uuid not null references public.matches(id) on delete cascade,
   player_id       uuid not null references public.players(id) on delete restrict,
   team            text not null check (team in ('A','B')),
   goals           int  not null default 0 check (goals >= 0 and goals <= 50),
   goals_recorded  boolean not null default false,
+  slot            int,   -- position in the drawn order (1 = first drawn), keeps the pitch layout stable
   primary key (match_id, player_id)
 );
+alter table public.match_players add column if not exists slot int;
 
 -- Anonymous man-of-the-match voting uses TWO tables on purpose:
 --   motm_ballots: records THAT a person voted (so nobody votes twice)
@@ -206,8 +219,13 @@ begin
 end $$;
 
 -- Save a drawn game: the match and its full line-up in one all-or-nothing step.
+-- The function gained extra (optional) inputs, so remove the previous version first.
+drop function if exists public.create_match(date, int, uuid[], uuid[], jsonb);
+
 create or replace function public.create_match(
-  p_date date, p_format int, p_team_a uuid[], p_team_b uuid[], p_rules jsonb default null)
+  p_date date, p_format int, p_team_a uuid[], p_team_b uuid[], p_rules jsonb default null,
+  p_name_a text default null, p_colour_a text default null,
+  p_name_b text default null, p_colour_b text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare mid uuid;
 begin
@@ -222,11 +240,19 @@ begin
   if (select count(*) from public.players where id = any (p_team_a || p_team_b)) <> p_format * 2 then
     raise exception 'Unknown player in the line-up';
   end if;
-  insert into public.matches (played_on, format, draw_rules, created_by)
-  values (coalesce(p_date, current_date), p_format, p_rules, auth.uid())
+  if p_colour_a is not null and p_colour_a = p_colour_b then
+    raise exception 'The two teams need different colours';
+  end if;
+  insert into public.matches (played_on, format, draw_rules, created_by,
+                              team_a_name, team_a_colour, team_b_name, team_b_colour)
+  values (coalesce(p_date, current_date), p_format, p_rules, auth.uid(),
+          nullif(btrim(p_name_a), ''), p_colour_a, nullif(btrim(p_name_b), ''), p_colour_b)
   returning id into mid;
-  insert into public.match_players (match_id, player_id, team) select mid, x, 'A' from unnest(p_team_a) x;
-  insert into public.match_players (match_id, player_id, team) select mid, x, 'B' from unnest(p_team_b) x;
+  -- slot = the order players were drawn in, so the saved pitch looks exactly as it did at the draw
+  insert into public.match_players (match_id, player_id, team, slot)
+    select mid, t.x, 'A', t.n::int from unnest(p_team_a) with ordinality as t(x, n);
+  insert into public.match_players (match_id, player_id, team, slot)
+    select mid, t.x, 'B', t.n::int from unnest(p_team_b) with ordinality as t(x, n);
   return mid;
 end $$;
 
@@ -315,12 +341,12 @@ returns table (voted int, eligible int) language sql stable security definer set
   where public.is_approved();
 $$;
 
-revoke execute on function public.create_match(date, int, uuid[], uuid[], jsonb) from public, anon;
+revoke execute on function public.create_match(date, int, uuid[], uuid[], jsonb, text, text, text, text) from public, anon;
 revoke execute on function public.set_my_name(text)           from public, anon;
 revoke execute on function public.set_goals(uuid, uuid, int)  from public, anon;
 revoke execute on function public.cast_motm(uuid, uuid)       from public, anon;
 revoke execute on function public.motm_progress(uuid)         from public, anon;
-grant  execute on function public.create_match(date, int, uuid[], uuid[], jsonb) to authenticated;
+grant  execute on function public.create_match(date, int, uuid[], uuid[], jsonb, text, text, text, text) to authenticated;
 grant  execute on function public.set_my_name(text)           to authenticated;
 grant  execute on function public.set_goals(uuid, uuid, int)  to authenticated;
 grant  execute on function public.cast_motm(uuid, uuid)       to authenticated;
@@ -339,33 +365,82 @@ select v.match_id,
  where m.motm_closed and public.is_approved()
  group by v.match_id, v.nominee_id;
 
--- One row per player with everything the Stats screen needs.
-create or replace view public.player_stats as
+-- One row per player PER CALENDAR YEAR (season), based on the date each game was played.
+-- Every game belongs to the year of its date, so stats start fresh each 1 January and
+-- earlier years stay available. Players with no games in a year simply have no row (the app shows zeros).
+drop view if exists public.player_stats;
+create view public.player_stats as
 select p.id as player_id,
        p.name,
        p.avatar_url,
        p.active,
-       count(m.id)::int as games,
-       coalesce(sum(case when m.id is null then 0
-                         when mp.team = 'A' then m.score_a else m.score_b end), 0)::int as goals_for,
-       coalesce(sum(case when m.id is null then 0
-                         when mp.team = 'A' then m.score_b else m.score_a end), 0)::int as goals_against,
-       coalesce(sum(case when m.id is not null and
-                         ((mp.team = 'A' and m.score_a > m.score_b) or (mp.team = 'B' and m.score_b > m.score_a))
-                         then 1 else 0 end), 0)::int as wins,
-       coalesce(sum(case when m.id is not null and m.score_a = m.score_b then 1 else 0 end), 0)::int as draws,
-       coalesce(sum(case when m.id is not null and
-                         ((mp.team = 'A' and m.score_a < m.score_b) or (mp.team = 'B' and m.score_b < m.score_a))
-                         then 1 else 0 end), 0)::int as losses,
-       coalesce(sum(case when m.id is not null then mp.goals else 0 end), 0)::int as personal_goals,
-       (select count(*)::int from public.motm_results r where r.player_id = p.id and r.is_winner) as motm
+       m.season,
+       count(*)::int as games,
+       sum(case when mp.team = 'A' then m.score_a else m.score_b end)::int as goals_for,
+       sum(case when mp.team = 'A' then m.score_b else m.score_a end)::int as goals_against,
+       sum(case when (mp.team = 'A' and m.score_a > m.score_b) or (mp.team = 'B' and m.score_b > m.score_a)
+                then 1 else 0 end)::int as wins,
+       sum(case when m.score_a = m.score_b then 1 else 0 end)::int as draws,
+       sum(case when (mp.team = 'A' and m.score_a < m.score_b) or (mp.team = 'B' and m.score_b < m.score_a)
+                then 1 else 0 end)::int as losses,
+       sum(mp.goals)::int as personal_goals,
+       (select count(*)::int
+          from public.motm_results r
+          join public.matches mm on mm.id = r.match_id
+         where r.player_id = p.id and r.is_winner
+           and extract(year from mm.played_on)::int = m.season) as motm
   from public.players p
-  left join public.match_players mp on mp.player_id = p.id
-  left join public.matches m on m.id = mp.match_id and m.status = 'completed'
+  join public.match_players mp on mp.player_id = p.id
+  join (select id, score_a, score_b, extract(year from played_on)::int as season
+          from public.matches where status = 'completed') m on m.id = mp.match_id
  where public.is_approved()
- group by p.id;
+ group by p.id, m.season;
 
 revoke all on public.motm_results from anon;
-revoke all on public.player_stats from anon;
 grant select on public.motm_results to authenticated;
+revoke all on public.player_stats from anon;
 grant select on public.player_stats to authenticated;
+
+-- Merge a guest into another player (usually a guest who has since joined as a member).
+-- Moves ALL of the guest's games, goals, man-of-the-match votes and draw rules onto the chosen
+-- player, then removes the guest. The chosen player keeps their own name. Admins only.
+create or replace function public.merge_players(p_from uuid, p_into uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  f public.players;
+  t public.players;
+  clash record;
+begin
+  if not public.is_admin() then raise exception 'Only admins can merge players'; end if;
+  if p_from = p_into then raise exception 'Choose two different players'; end if;
+
+  select * into f from public.players where id = p_from;
+  if not found then raise exception 'The guest to merge was not found'; end if;
+  select * into t from public.players where id = p_into;
+  if not found then raise exception 'The player to merge into was not found'; end if;
+
+  if f.profile_id is not null then
+    raise exception '% has a login, so they can''t be merged away. Merge a guest into a member instead.', f.name;
+  end if;
+
+  -- they can't be the same person if both played in the same game
+  select m.played_on into clash
+    from public.match_players a
+    join public.match_players b on b.match_id = a.match_id
+    join public.matches m on m.id = a.match_id
+   where a.player_id = p_from and b.player_id = p_into
+   limit 1;
+  if found then
+    raise exception 'Both played in the game on %, so they can''t be the same person', clash.played_on;
+  end if;
+
+  update public.match_players set player_id  = p_into where player_id  = p_from;
+  update public.motm_votes    set nominee_id = p_into where nominee_id = p_from;
+  update public.matches
+     set draw_rules = replace(draw_rules::text, p_from::text, p_into::text)::jsonb
+   where draw_rules is not null and draw_rules::text like '%' || p_from::text || '%';
+  delete from public.players where id = p_from;
+end $$;
+
+revoke execute on function public.merge_players(uuid, uuid) from public, anon;
+grant  execute on function public.merge_players(uuid, uuid) to authenticated;

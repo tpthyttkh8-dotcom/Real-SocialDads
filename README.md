@@ -7,6 +7,8 @@ A small web app for a weekly 5, 6, 7 or (rarely) 8-a-side game among friends.
 - **Draw rules:** keep chosen players on the *same* team (e.g. a guest with whoever invited them) or on *opposite* teams
 - **Regulars can run the draw:** the admin can give any member the "organiser" role
 - **Every line-up is saved** and can be reviewed any time
+- **A fresh season each calendar year:** games and stats run 1 Jan to 31 Dec, and past years stay viewable
+- **Merge a guest into a member** when they join, so their history carries over
 - **Share to WhatsApp:** one tap sends the line-up (or result) to your group chat
 - **Record the final score** and who played
 - **Players add their own goals** after each game
@@ -97,6 +99,29 @@ Once you've picked the players, a **Draw rules** card appears:
 
 You can add as many rules as you like. The app tells you straight away if rules clash (for example "together" and "apart" for the same pair) or can't fit the team sizes. Within the rules the draw is still fully random, and a group set to play together is just as likely to land on Blue as on Orange. If you untick a player, any rules involving them are removed.
 
+### The pitch and formations
+
+Each team is shown on the pitch in a fixed shape, goalkeeper at the back:
+
+| Format | Formation |
+|---|---|
+| 5-a-side | 1 - 2 - 2 |
+| 6-a-side | 1 - 3 - 2 |
+| 7-a-side | 1 - 3 - 3 |
+| 8-a-side | 1 - 3 - 3 - 1 |
+
+Players are placed in the shape at random, so the player at the back is just the first one drawn. Swap keepers between yourselves if you need to. The pitch grows to fit every row so no names are cut off, and if two players share a first name both get a last initial (for example "Tom O." and "Tom B.").
+
+### Team names and colours (just for fun)
+
+On the New game page, give each team a name and pick its colour from eight options (red, orange, yellow, green, blue, purple, black, white). Leave a name blank and the team is simply called by its colour. Picking the colour the other team already has swaps the two. The names and colours show on the pitch, the scores, the goal lists and the WhatsApp message (with a matching coloured circle). An organiser can change them later from the bottom of any saved game.
+
+They are purely cosmetic: stats only ever count which side a player was on, never the name or colour, so nothing about the numbers can change. Games with no name or colour set (including every game from before this feature) still show as Blue and Orange.
+
+### Not happy with the draw?
+
+After you tap **Draw teams**, the button changes to **Shuffle again**, sitting next to **Save game** under the pitch. Shuffle as many times as you like. Nothing is recorded until you tap **Save game**, and your draw rules stay in place for every reshuffle.
+
 ### Who can do what
 
 | | Everyone approved | Organiser | Admin |
@@ -104,9 +129,29 @@ You can add as many rules as you like. The app tells you straight away if rules 
 | See games, line-ups, stats | ✓ | ✓ | ✓ |
 | Record own goals, vote, share to WhatsApp | ✓ | ✓ | ✓ |
 | Draw teams, add guests, enter scores, close voting, fill in anyone's goals | | ✓ | ✓ |
-| Approve people, give roles, edit players, delete games, download backups | | | ✓ |
+| Approve people, give roles, edit players, merge guests, delete games, download backups | | | ✓ |
 
 Admins give the organiser role in **Admin → Members → Let them draw teams**.
+
+---
+
+## Seasons: a fresh start each year
+
+Games and stats run for a **calendar year**. Every game belongs to the year of its date, so on 1 January the Matches and Stats pages start empty for the new season. The numbered year buttons at the top of both pages switch between seasons, and earlier years stay available as an archive (nothing is deleted).
+
+- Stats for a season only count games dated in that year, including goals, goals for/against and man of the match awards.
+- A game dated 31 December counts towards that year even if the final score is entered on 2 January.
+- Players who haven't played yet this year show with zeros in the current season.
+
+## When a guest joins the group
+
+If a guest later becomes a regular and signs in, you can move their whole history onto their new login:
+
+1. Have them sign in, enter their name, and approve them in **Admin** as usual. They now appear as a player.
+2. In **Admin → Players**, find the guest and tap **Merge…**.
+3. Choose the new member from the list and confirm.
+
+All of the guest's games, goals, man of the match awards and draw rules move onto the member, across every season, and the guest entry is removed. The member keeps their own name. It **can't be undone**, so check the choice first. Merging is refused if both appeared in the same game (they can't be the same person). Only admins can merge, and only guests can be merged away (never someone with a login). This also works for tidying up a guest entered twice under slightly different names.
 
 ---
 
@@ -146,10 +191,14 @@ These are enforced by the database itself (Row Level Security), not just the scr
 
 ---
 
+## Updating an existing install safely
+
+When an update comes with a `migration_….sql` file, run it once in Supabase (SQL Editor → New query → Run) and re-upload the changed site files. The migrations only **add** optional columns, recreate saved queries (views) and replace functions. They don't delete or overwrite your games, players, scores or goals, and they're safe to run twice. As a precaution, tap **Admin → Download backup** first.
+
 ## Customising
 
 - **App name:** `APP_NAME` in `config.js`.
-- **Team names:** `TEAM` at the top of `app.js` (default Blue and Orange).
+- **Default team colours:** a game with no choice set shows Blue and Orange. The colour options live in `PALETTE` at the top of `app.js` and the `.tc-…` rules in `styles.css`.
 - **Colours and look:** the variables at the top of `styles.css`. It follows each phone's light/dark mode.
 
 ## Troubleshooting
@@ -176,5 +225,8 @@ styles.css          styling
 config.js           your Supabase URL + key (edit this)
 manifest.json       lets phones install it like an app
 icons/              app icons
-supabase/schema.sql database tables, security rules, stats views
+supabase/schema.sql database tables, security rules, stats views (for a fresh install)
+supabase/migration_seasons_merge.sql  one-off update if you installed an earlier version
+supabase/migration_lineup_order.sql   one-off update: keeps saved line-ups in the order they were drawn
+supabase/migration_team_names_colours.sql  one-off update: fun team names and colours
 ```

@@ -1,7 +1,7 @@
 {
   "name": "Real SocialDads",
   "short_name": "Real SocialDads",
-  "description": "Weekly games, team generation, player stats.",
+  "description": "Weekly games, fair teams, proper stats.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

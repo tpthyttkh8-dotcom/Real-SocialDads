@@ -4,7 +4,20 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
 import { drawTeams, validateRules } from './draw.js';
 
-const TEAM = { A: 'Blue', B: 'Orange' };
+// Team names and colours are just for fun: they are stored on each game and never used for stats
+// (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
+const PALETTE = {
+  red: { label: 'Red', emoji: '🔴' }, orange: { label: 'Orange', emoji: '🟠' }, yellow: { label: 'Yellow', emoji: '🟡' },
+  green: { label: 'Green', emoji: '🟢' }, blue: { label: 'Blue', emoji: '🔵' }, purple: { label: 'Purple', emoji: '🟣' },
+  black: { label: 'Black', emoji: '⚫' }, white: { label: 'White', emoji: '⚪' },
+};
+const pal = (k) => PALETTE[k] || PALETTE.blue;
+const freshStyle = () => ({ A: { name: '', colour: 'blue' }, B: { name: '', colour: 'orange' } });
+const matchStyle = (m) => ({
+  A: { name: m.team_a_name || '', colour: PALETTE[m.team_a_colour] ? m.team_a_colour : 'blue' },
+  B: { name: m.team_b_name || '', colour: PALETTE[m.team_b_colour] ? m.team_b_colour : 'orange' },
+});
+const tName = (st, t) => (st[t].name || '').trim() || pal(st[t].colour).label;
 const $app = document.getElementById('app');
 document.title = APP_NAME;
 
@@ -29,6 +42,9 @@ const state = {
 const ui = {
   draft: { date: today(), format: 6, selected: new Set(), teams: null, animate: false, rules: { together: [], apart: [] }, ruleType: 'together', rulePick: new Set() },
   sort: { key: 'wins', dir: -1 },
+  year: new Date().getFullYear(),
+  merge: null,
+  style: { draft: freshStyle() },
   choice: {},
 };
 let routeToken = 0;
@@ -146,7 +162,7 @@ function showLogin() {
   $app.innerHTML = `<div class="hero"><div class="hero-in">
     <div class="mini-pitch" aria-hidden="true"></div>
     <h1>${esc(APP_NAME)}</h1>
-    <p> Team Creation, final scores and play stats for our weekly game.</p>
+    <p>Fair teams, final scores and proper stats for the weekly game.</p>
     ${linkError && !ui.linkErrorShown ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one.</p>' : ''}
     <form data-form="send-link" class="login-form">
       <label class="field"><span>Your email</span>
@@ -230,6 +246,7 @@ async function route(keepScroll = false) {
   const [seg = '', arg] = location.hash.replace(/^#\/?/, '').split('/');
   const token = ++routeToken;
   const y = window.scrollY;
+  if (seg === 'match' && !keepScroll) delete ui.style[arg]; // forget unsaved name/colour edits when (re)opening a game
   let html;
   try {
     if ((seg === 'new' && !isOrganiser()) || (seg === 'admin' && !isAdmin())) { location.hash = '#/'; return; }
@@ -251,17 +268,45 @@ async function route(keepScroll = false) {
 }
 window.addEventListener('hashchange', () => route());
 
+/* ------------------------------------------------------------ seasons (calendar years) */
+const curYear = () => new Date().getFullYear();
+const matchYear = (m) => parseInt(m.played_on.slice(0, 4), 10);
+function yearsAvailable() {
+  const ys = new Set(state.matches.map(matchYear));
+  ys.add(curYear());
+  return [...ys].sort((a, b) => b - a);
+}
+function yearPicker() {
+  if (!yearsAvailable().includes(ui.year)) ui.year = curYear();
+  const note = ui.year < curYear()
+    ? `${ui.year} is an archived season. Everything starts fresh each 1 January.`
+    : `Games and stats run for the calendar year and start fresh each 1 January. Past seasons stay available here.`;
+  return `<div class="years" role="group" aria-label="Season">${yearsAvailable().map((y) =>
+    `<button class="${y === ui.year ? 'on' : ''}" data-act="year" data-y="${y}" aria-pressed="${y === ui.year}">${y}</button>`).join('')}</div>
+    <p class="muted small-text" style="margin:-4px 0 14px">${note}</p>`;
+}
+
 /* ------------------------------------------------------------ view: matches */
-function rosterOf(id) { return state.mp.filter((r) => r.match_id === id); }
+// Line-up in the order it was drawn (slot), so the pitch always looks exactly as it did when saved.
+function rosterOf(id) {
+  return state.mp.filter((r) => r.match_id === id)
+    .sort((a, b) => (a.slot ?? 999) - (b.slot ?? 999) || (player(a.player_id)?.name || '').localeCompare(player(b.player_id)?.name || ''));
+}
 
 function viewMatches() {
-  const list = state.matches;
-  if (!list.length) {
+  if (!state.matches.length) {
     return `<h1>Matches</h1><div class="card empty"><h2>No games yet</h2>
       <p>${isOrganiser() ? 'Pick who is playing and draw the first teams.' : 'Once an organiser draws the teams, the game will show up here.'}</p>
       ${isOrganiser() ? '<a class="btn" href="#/new">Draw teams</a>' : ''}</div>`;
   }
-  return `<h1>Matches</h1>${list.map(matchCard).join('')}`;
+  const picker = yearPicker();
+  const list = state.matches.filter((m) => matchYear(m) === ui.year);
+  if (!list.length) {
+    return `<h1>Matches</h1>${picker}<div class="card empty"><h2>No games in ${ui.year} yet</h2>
+      <p>${isOrganiser() && ui.year === curYear() ? 'A fresh season. Draw the first teams of the year.' : 'Nothing was played this year.'}</p>
+      ${isOrganiser() && ui.year === curYear() ? '<a class="btn" href="#/new">Draw teams</a>' : ''}</div>`;
+  }
+  return `<h1>Matches</h1>${picker}${list.map(matchCard).join('')}`;
 }
 
 function matchCard(m) {
@@ -284,43 +329,50 @@ function matchCard(m) {
       <div class="date-blk"><b>${d.getDate()}</b><span>${d.toLocaleDateString('en-GB', { month: 'short' })}</span></div>
       <div class="match-mid"><div class="fmt">${m.format}-a-side</div>
         <div class="sub">${d.toLocaleDateString('en-GB', { weekday: 'long' })}${result ? ' · ' + result : ''}</div></div>
-      ${done ? `<div class="scoreline" aria-label="Blue ${m.score_a}, Orange ${m.score_b}"><span class="a">${m.score_a}</span><span class="dash">–</span><span class="b">${m.score_b}</span></div>` : ''}
+      ${done ? (() => { const st = matchStyle(m); return `<div class="scoreline" aria-label="${esc(tName(st, 'A'))} ${m.score_a}, ${esc(tName(st, 'B'))} ${m.score_b}"><span class="chip-score tc-${st.A.colour}">${m.score_a}</span><span class="dash">–</span><span class="chip-score tc-${st.B.colour}">${m.score_b}</span></div>`; })() : ''}
     </div>
     ${badges.length ? `<div class="badges">${badges.join('')}</div>` : ''}
   </a>`;
 }
 
 /* ------------------------------------------------------------- the pitch */
-function rowsFor(n) { return { 1: [1], 2: [1, 1], 3: [1, 2], 4: [2, 2], 5: [2, 2, 1], 6: [2, 2, 2], 7: [3, 2, 2], 8: [3, 3, 2] }[n] || [n]; }
+// Formations, goalkeeper first (the single player at the back), then defence -> attack.
+const FORMATIONS = { 5: [1, 2, 2], 6: [1, 3, 2], 7: [1, 3, 3], 8: [1, 3, 3, 1] };
+function rowsFor(n) { return FORMATIONS[n] || (n > 1 ? [1, n - 1] : [1]); }
 
-function pitchHTML(teamA, teamB, { animate = false, score = null } = {}) {
+// First names for the pitch. If two players share a first name, add a last initial to both.
+function shortNames(ids) {
+  const first = ids.map((id) => firstName(player(id)?.name));
+  const seen = {};
+  first.forEach((n) => { const k = n.toLowerCase(); seen[k] = (seen[k] || 0) + 1; });
+  const out = {};
+  ids.forEach((id, i) => {
+    const parts = String(player(id)?.name || '').trim().split(/\s+/);
+    out[id] = seen[first[i].toLowerCase()] > 1 && parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : first[i];
+  });
+  return out;
+}
+
+function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle() } = {}) {
   const me = myPlayer()?.id;
+  const label = shortNames([...teamA, ...teamB]);
   const half = (team, ids) => {
-    let rows = rowsFor(ids.length);
-    if (team === 'B') rows = [...rows].reverse();
+    // Fill the formation back-to-front (first player drawn = back row), then draw it facing the right way:
+    // The first team defends the top goal, the second team the bottom goal.
     let k = 0;
-    const bodies = rows.map((count) => {
-      const toks = [];
-      for (let i = 0; i < count; i++) {
-        // forwards line is always the row nearest the halfway line
-        const idx = k++;
-        toks.push(ids[idx]);
-      }
-      return toks;
-    });
-    // Place players so the draw order reads naturally: A fills top->bottom, B fills bottom->top
-    let order = 0;
-    const html = bodies.map((r) => `<div class="row">${r.map((id) => {
+    const lines = rowsFor(ids.length).map((count) => ids.slice(k, (k += count)));
+    const shown = team === 'B' ? [...lines].reverse() : lines;
+    const html = shown.map((line) => `<div class="row">${line.map((id) => {
       const p = player(id);
-      const i = order++ * 2 + (team === 'B' ? 1 : 0);
-      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}<span class="nm">${esc(firstName(p?.name))}</span></div>`;
+      const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
+      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}<span class="nm">${esc(label[id])}</span></div>`;
     }).join('')}</div>`).join('');
-    return `<div class="half ${team}"><span class="team-tag">${TEAM[team]}</span>${html}</div>`;
+    return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
   };
   return `<div class="pitch-wrap"><div class="pitch${animate ? ' animate' : ''}" role="img" aria-label="Teams: ${esc(teamA.map((i) => player(i)?.name).join(', '))} versus ${esc(teamB.map((i) => player(i)?.name).join(', '))}">
     <div class="lines"></div><div class="box top"></div><div class="box bot"></div>
     ${half('A', teamA)}${half('B', teamB)}
-    ${score ? `<div class="mid-score"><span class="a">${score[0]}</span> – <span class="b">${score[1]}</span></div>` : ''}
+    ${score ? `<div class="mid-score"><span class="chip-score tc-${style.A.colour}">${score[0]}</span><span class="dash">–</span><span class="chip-score tc-${style.B.colour}">${score[1]}</span></div>` : ''}
   </div></div>`;
 }
 
@@ -347,15 +399,16 @@ async function viewMatch(id) {
     <h1>${m.format}-a-side</h1><p class="muted" style="margin:-8px 0 4px">${esc(fmtLong(m.played_on))}</p>
     ${drawnBy(m) ? `<p class="muted small-text">Teams drawn by ${esc(drawnBy(m))}</p>` : ''}`;
 
-  const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), { score: done ? [m.score_a, m.score_b] : null });
+  const st = matchStyle(m);
+  const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), { score: done ? [m.score_a, m.score_b] : null, style: st });
 
   let scoreCard = '';
   if (org) {
     scoreCard = `<section class="card"><h2>${done ? 'Final score' : 'Enter the final score'}</h2>
       <div class="score-entry">
-        <label class="a">Blue<input class="num" id="sa" type="number" inputmode="numeric" min="0" max="99" value="${done ? m.score_a : ''}" placeholder="0"></label>
+        <label class="tc-${st.A.colour}"><span class="lbl-name"><i class="tdot"></i>${esc(tName(st, 'A'))}</span><input class="num" id="sa" type="number" inputmode="numeric" min="0" max="99" value="${done ? m.score_a : ''}" placeholder="0"></label>
         <span class="dash">–</span>
-        <label class="b">Orange<input class="num" id="sb" type="number" inputmode="numeric" min="0" max="99" value="${done ? m.score_b : ''}" placeholder="0"></label>
+        <label class="tc-${st.B.colour}"><span class="lbl-name"><i class="tdot"></i>${esc(tName(st, 'B'))}</span><input class="num" id="sb" type="number" inputmode="numeric" min="0" max="99" value="${done ? m.score_b : ''}" placeholder="0"></label>
       </div>
       <button class="btn block" data-act="save-score" data-m="${id}">${done ? 'Update score' : 'Save final score'}</button></section>`;
   } else if (!done) {
@@ -366,7 +419,7 @@ async function viewMatch(id) {
   if (done) {
     const team = (t, rows, score) => {
       const logged = rows.filter((r) => r.goals_recorded).reduce((s, r) => s + r.goals, 0);
-      return `<div class="sub-h"><i class="${t}"></i>${TEAM[t]}<small>${logged} of ${score} goals accounted for</small></div>
+      return `<div class="sub-h tc-${st[t].colour}"><i class="tdot"></i>${esc(tName(st, t))}<small>${logged} of ${score} goals accounted for</small></div>
         <ul class="plist">${rows.map((r) => goalRow(r, m)).join('')}</ul>`;
     };
     goalsCard = `<section class="card"><h2>Goals</h2>
@@ -377,10 +430,12 @@ async function viewMatch(id) {
   let motmCard = '';
   if (done) motmCard = motmSection(m, roster, mine, progress);
   const rulesCard = rulesSummary(m);
+  let styleCard = '';
+  if (org) { ui.style[m.id] ||= matchStyle(m); styleCard = teamStyleCard(m.id, ui.style[m.id], m.id); }
   const shareCard = shareSection(m);
 
   const del = admin ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button></p>` : '';
-  return head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + del;
+  return head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
 function drawnBy(m) {
@@ -400,8 +455,9 @@ function shareText(m) {
   const list = (t) => roster.filter((r) => r.team === t).map((r) => '• ' + pname(r.player_id)).join('\n');
   const day = dateObj(m.played_on).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   let t = `⚽ *${APP_NAME}* – ${day}\n${m.format}-a-side\n\n`;
-  if (m.status === 'completed') t += `Final score: Blue ${m.score_a} – ${m.score_b} Orange\n\n`;
-  t += `🔵 *Blue*\n${list('A')}\n\n🟠 *Orange*\n${list('B')}\n\n${lineupUrl(m)}`;
+  const st = matchStyle(m);
+  if (m.status === 'completed') t += `Final score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}\n\n`;
+  t += `${pal(st.A.colour).emoji} *${tName(st, 'A')}*\n${list('A')}\n\n${pal(st.B.colour).emoji} *${tName(st, 'B')}*\n${list('B')}\n\n${lineupUrl(m)}`;
   return t;
 }
 function shareSection(m) {
@@ -465,6 +521,21 @@ function motmSection(m, roster, mine, progress) {
 }
 
 /* ------------------------------------------------------------ view: new game */
+// Name + colour pickers for the two teams. ctx = 'draft' (new game) or a match id (editing a saved game).
+function teamStyleCard(ctx, st, matchId = null) {
+  const row = (t, title) => `<div class="team-style tc-${st[t].colour}">
+      <div class="ts-head"><i class="tdot"></i><label for="tn-${ctx}-${t}">${title}</label></div>
+      <input type="text" id="tn-${ctx}-${t}" maxlength="24" autocomplete="off" placeholder="${esc(pal(st[t].colour).label)}" value="${esc(st[t].name)}" data-teamname="${t}" data-ctx="${ctx}">
+      <div class="swatches" role="group" aria-label="Colour for ${title}">${Object.entries(PALETTE).map(([k, p]) =>
+        `<button type="button" class="sw tc-${k}" data-act="team-colour" data-ctx="${ctx}" data-team="${t}" data-c="${k}" aria-label="${p.label}" aria-pressed="${st[t].colour === k}"><span aria-hidden="true">✓</span></button>`).join('')}</div>
+    </div>`;
+  return `<section class="card"><h2>Team names &amp; colours</h2>
+    <p class="muted small-text">Just for fun. Leave a name blank to use the colour. Names and colours never affect scores or stats.</p>
+    ${row('A', 'Team 1 (top of the pitch)')}${row('B', 'Team 2 (bottom)')}
+    ${matchId ? `<button class="btn block" style="margin-top:12px" data-act="save-team-style" data-m="${matchId}">Save names &amp; colours</button>` : ''}
+  </section>`;
+}
+
 function viewNew() {
   const d = ui.draft;
   const need = d.format * 2;
@@ -472,7 +543,7 @@ function viewNew() {
   const count = d.selected.size;
   const diff = need - count;
   const hint = diff > 0 ? `Pick ${plural(diff, 'more player')}.` : diff < 0 ? `Too many: remove ${plural(-diff, 'player')}.` : 'Ready to draw.';
-  const teams = d.teams ? pitchHTML(d.teams.A, d.teams.B, { animate: d.animate }) : '';
+  const teams = d.teams ? pitchHTML(d.teams.A, d.teams.B, { animate: d.animate, style: ui.style.draft }) : '';
   const picked = state.players.filter((p) => d.selected.has(p.id));
   const rules = [...d.rules.together.map((g, i) => ['together', i, g]), ...d.rules.apart.map((g, i) => ['apart', i, g])];
   const pickOk = d.ruleType === 'together' ? d.rulePick.size >= 2 : d.rulePick.size === 2;
@@ -502,10 +573,11 @@ function viewNew() {
     <div class="inline-add"><input type="text" id="new-guest" maxlength="40" placeholder="Guest's name" autocomplete="off" aria-label="Guest's name"><button class="btn ghost" data-act="add-guest-inline">Add guest</button></div>
   </section>
   ${rulesCard}
-  <button class="btn block" data-act="draw" ${count === need ? '' : 'disabled'}>${d.teams ? 'Shuffle again' : 'Draw teams'}</button>
-  ${d.teams ? `<div id="drawn" style="margin-top:18px">${teams}
-    <button class="btn block" data-act="save-match">Save game</button>
-    <p class="muted small-text" style="text-align:center;margin-top:10px">Not happy? Shuffle again before saving. Once saved, the line-up is recorded for good.</p></div>` : ''}`;
+  ${teamStyleCard('draft', ui.style.draft)}
+  ${d.teams ? '' : `<button class="btn block" data-act="draw" ${count === need ? '' : 'disabled'}>Draw teams</button>`}
+  ${d.teams ? `<div id="drawn" style="margin-top:6px">${teams}
+    <div class="btn-row"><button class="btn ghost" data-act="draw">Shuffle again</button><button class="btn" data-act="save-match">Save game</button></div>
+    <p class="muted small-text" style="text-align:center;margin-top:12px">Not happy? Shuffle again as many times as you like. Nothing is recorded until you tap Save game. Your draw rules stay in place.<br>The player at the back is just the first one drawn, so swap keepers between yourselves if needed.</p></div>` : ''}`;
 }
 
 /* --------------------------------------------------------------- view: stats */
@@ -516,19 +588,27 @@ const COLS = [
   ['personal_goals', 'Goals', 'Your own goals'], ['gpg', 'Goals/g', 'Your own goals per game'], ['motm', 'MOTM', 'Man of the match awards'],
 ];
 function viewStats() {
-  const rows = state.stats.filter((s) => s.games > 0 || s.active).map((s) => ({
+  const picker = yearPicker();
+  const y = ui.year;
+  const base = state.stats.filter((r) => r.season === y);
+  if (!base.length) {
+    return `<h1>Stats</h1>${picker}<div class="card empty"><h2>No results in ${y} yet</h2>
+      <p>${y === curYear() ? `Stats appear once the first game of ${y} has a final score.` : 'No completed games were recorded this year.'}</p></div>`;
+  }
+  // this season only: players who haven't played yet this year show as zeros
+  const have = new Set(base.map((r) => r.player_id));
+  const zero = (p) => ({ player_id: p.id, name: p.name, avatar_url: p.avatar_url, active: true, season: y, games: 0, goals_for: 0, goals_against: 0, wins: 0, draws: 0, losses: 0, personal_goals: 0, motm: 0 });
+  const extra = y === curYear() ? state.players.filter((p) => p.active && !have.has(p.id)).map(zero) : [];
+  const rows = [...base, ...extra].map((s) => ({
     ...s,
     gfpg: s.games ? s.goals_for / s.games : 0,
     gapg: s.games ? s.goals_against / s.games : 0,
     gpg: s.games ? s.personal_goals / s.games : 0,
   }));
-  if (!state.matches.some((m) => m.status === 'completed')) {
-    return `<h1>Stats</h1><div class="card empty"><h2>No results yet</h2><p>Stats appear once the first game has a final score.</p></div>`;
-  }
   const { key, dir } = ui.sort;
   rows.sort((a, b) => key === 'name' ? a.name.localeCompare(b.name) * -dir : (b[key] - a[key]) * -dir || b.wins - a.wins || a.name.localeCompare(b.name));
   const avg = (v) => v.toFixed(1);
-  return `<h1>Stats</h1><div class="card"><div class="tablewrap"><table class="stats">
+  return `<h1>Stats</h1>${picker}<div class="card"><div class="tablewrap"><table class="stats">
     <thead><tr>${COLS.map(([k, l, full]) => `<th scope="col"><button data-act="sort" data-k="${k}" aria-pressed="${k === key}" title="${full}" aria-label="Sort by ${full}">${l}</button></th>`).join('')}</tr></thead>
     <tbody>${rows.map((r) => `<tr>
       <td><div class="nm-cell">${disc(r)}<span>${esc(r.name)}</span></div></td>
@@ -550,6 +630,19 @@ function viewMe() {
   </form></section>
   <section class="card"><p style="margin:0 0 12px">Signed in as <b>${esc(p.email || '@' + p.github_username)}</b></p>
     <button class="btn ghost block" data-act="signout">Sign out</button></section>`;
+}
+
+function mergePanel() {
+  const g = ui.merge && player(ui.merge);
+  if (!g) { ui.merge = null; return ''; }
+  const opts = state.players.filter((p) => p.id !== g.id)
+    .sort((a, b) => (!!b.profile_id - !!a.profile_id) || a.name.localeCompare(b.name));
+  return `<div class="merge-panel"><h3>Merge ${esc(g.name)} into…</h3>
+    <p class="small-text">All of ${esc(g.name)}'s games, goals and man of the match awards move to the player you choose, and ${esc(g.name)} is removed. The chosen player keeps their own name. <b>This can't be undone.</b></p>
+    <p class="muted small-text">The new member must have signed in and been approved first, so they appear in this list.</p>
+    <label class="field"><span>Merge into</span><select id="merge-into"><option value="">Choose a player…</option>
+      ${opts.map((p) => `<option value="${p.id}">${esc(p.name)}${p.profile_id ? '' : ' (guest)'}</option>`).join('')}</select></label>
+    <div class="btn-row"><button class="btn" data-act="merge-confirm">Merge players</button><button class="btn ghost" data-act="merge-cancel">Cancel</button></div></div>`;
 }
 
 /* --------------------------------------------------------------- view: admin */
@@ -575,9 +668,11 @@ function viewAdmin() {
         <button class="btn danger small" data-act="revoke" data-id="${p.id}">Remove</button></div>`}</li>`).join('')}
   </ul></section>
   <section class="card"><h2>Players</h2>
-    <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats.</p>
-    <ul class="plist">${state.players.map((p) => `<li>${disc(p)}<div class="who">${esc(p.name)}${p.profile_id ? '' : '<small>Guest</small>'}</div>
-      <button class="btn ghost small" data-act="toggle-active" data-id="${p.id}" data-v="${p.active ? 0 : 1}">${p.active ? 'Set inactive' : 'Set active'}</button></li>`).join('')}</ul>
+    <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats. If a guest joins the group, use <b>Merge</b> to move their history onto their new login.</p>
+    ${mergePanel()}
+    <ul class="plist">${state.players.map((p) => `<li class="wrap">${disc(p)}<div class="who">${esc(p.name)}${p.profile_id ? '' : '<small>Guest</small>'}</div>
+      <div class="acts"><button class="btn ghost small" data-act="toggle-active" data-id="${p.id}" data-v="${p.active ? 0 : 1}">${p.active ? 'Set inactive' : 'Set active'}</button>
+      ${p.profile_id ? '' : `<button class="btn ghost small" data-act="merge-start" data-id="${p.id}">Merge…</button>`}</div></li>`).join('')}</ul>
     <div style="margin-top:14px"><label class="field"><span>Add a guest player</span><input type="text" id="guest-name" maxlength="40" placeholder="Name" autocomplete="off"></label>
     <button class="btn block" data-act="add-guest">Add player</button>
     <p class="muted small-text" style="margin:8px 0 0">Guests can be picked for teams and you can enter their goals, but they can't vote.</p></div>
@@ -657,9 +752,12 @@ const actions = {
       const hasRules = d.rules.together.length || d.rules.apart.length;
       const { data: id, error } = await sb.rpc('create_match', {
         p_date: d.date, p_format: d.format, p_team_a: d.teams.A, p_team_b: d.teams.B, p_rules: hasRules ? d.rules : null,
+        p_name_a: ui.style.draft.A.name.trim() || null, p_colour_a: ui.style.draft.A.colour,
+        p_name_b: ui.style.draft.B.name.trim() || null, p_colour_b: ui.style.draft.B.colour,
       });
       if (error) throw error;
       ui.draft = { date: today(), format: d.format, selected: new Set(), teams: null, animate: false, rules: { together: [], apart: [] }, ruleType: 'together', rulePick: new Set() };
+      ui.style.draft = freshStyle();
       await loadAll();
       toast('Game saved');
       location.hash = '#/match/' + id;
@@ -676,22 +774,60 @@ const actions = {
     }
     toast('Copied. Paste it into your chat');
   },
+  year(el) { ui.year = +el.dataset.y; route(true); },
+  'merge-start'(el) { ui.merge = el.dataset.id; route(true); },
+  'merge-cancel'() { ui.merge = null; route(true); },
+  async 'merge-confirm'(el) {
+    const into = document.getElementById('merge-into')?.value;
+    const from = ui.merge;
+    if (!into) return toast('Choose who to merge into', true);
+    if (!confirm(`Merge ${pname(from)} into ${pname(into)}? This can't be undone.`)) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('merge_players', { p_from: from, p_into: into });
+      if (error) throw error;
+      ui.merge = null;
+      toast('Players merged');
+      await refresh();
+    });
+  },
+  'team-colour'(el) {
+    const st = ui.style[el.dataset.ctx];
+    if (!st) return;
+    const t = el.dataset.team, o = t === 'A' ? 'B' : 'A', c = el.dataset.c;
+    if (st[o].colour === c) st[o].colour = st[t].colour; // picking the other team's colour swaps them
+    st[t].colour = c;
+    route(true);
+  },
+  async 'save-team-style'(el) {
+    const id = el.dataset.m, st = ui.style[id];
+    if (!st) return;
+    await busy(el, async () => {
+      const { error } = await sb.from('matches').update({
+        team_a_name: st.A.name.trim() || null, team_a_colour: st.A.colour,
+        team_b_name: st.B.name.trim() || null, team_b_colour: st.B.colour,
+      }).eq('id', id);
+      if (error) throw error;
+      delete ui.style[id];
+      toast('Team names and colours saved');
+      await refresh();
+    });
+  },
   async 'toggle-organiser'(el) { await adminUpdate(el, 'profiles', { can_organise: el.dataset.v === '1' }, 'Updated'); },
   backup() {
     const data = {
       exported_at: new Date().toISOString(), app: APP_NAME,
       matches: [...state.matches].reverse().map((m) => ({
         date: m.played_on, format: m.format, status: m.status,
-        score_blue: m.score_a, score_orange: m.score_b, drawn_by: drawnBy(m) || null,
+        team_a: matchStyle(m).A.name || pal(matchStyle(m).A.colour).label, team_b: matchStyle(m).B.name || pal(matchStyle(m).B.colour).label, score_team_a: m.score_a, score_team_b: m.score_b, drawn_by: drawnBy(m) || null,
         draw_rules: m.draw_rules ? [...(m.draw_rules.together || []).map((g) => ruleText('together', g)), ...(m.draw_rules.apart || []).map((g) => ruleText('apart', g))] : [],
         man_of_the_match: state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => pname(r.player_id)),
-        lineup: rosterOf(m.id).map((r) => ({ player: pname(r.player_id), team: TEAM[r.team], goals: r.goals_recorded ? r.goals : null })),
+        lineup: rosterOf(m.id).map((r) => ({ player: pname(r.player_id), team: tName(matchStyle(m), r.team), goals: r.goals_recorded ? r.goals : null })),
       })),
-      player_stats: state.stats.map(({ name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm }) => ({ name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm })),
+      player_stats: state.stats.map(({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm }) => ({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm })),
     };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    a.download = `Real SocialDads-backup-${today()}.json`;
+    a.download = `real-socialdads-backup-${today()}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     toast('Backup downloaded');
@@ -835,6 +971,16 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (el && actions[el.dataset.act]) actions[el.dataset.act](el, e);
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (!t.dataset?.teamname) return;
+  const st = ui.style[t.dataset.ctx];
+  if (!st) return;
+  st[t.dataset.teamname].name = t.value;
+  if (t.dataset.ctx === 'draft') { // keep the pitch preview's name tag in step while typing
+    document.querySelectorAll?.(`.half.${t.dataset.teamname} .team-tag`)?.forEach((el) => { el.textContent = tName(st, t.dataset.teamname); });
+  }
 });
 document.addEventListener('change', (e) => {
   const t = e.target;
