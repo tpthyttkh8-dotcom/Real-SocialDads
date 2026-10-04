@@ -1,4 +1,4 @@
-# Kickabout
+# Real SocialDads
 
 A small web app for a weekly 5, 6, 7 or (rarely) 8-a-side game among friends.
 
@@ -44,10 +44,10 @@ Supabase's built-in email service is for testing only: it sends about 2 emails a
    - **Brevo** (free plan): verify a sender email address (no domain needed), then use the SMTP details from Brevo's *SMTP & API* page.
    - **Resend / SendGrid / etc.** also work, but most make you verify a domain you own first.
 2. In Supabase go to **Authentication → Emails → SMTP Settings**, switch on **Custom SMTP**, and enter the host, port, username, password and a sender address/name.
-3. Still in **Authentication → Emails → Templates**, edit **both** the **Magic link** and the **Confirm sign up** templates (new friends get the second one the first time). Set the subject to something like `Your Kickabout sign-in` and paste this as the body, so the email contains the link *and* a code:
+3. Still in **Authentication → Emails → Templates**, edit **both** the **Magic link** and the **Confirm sign up** templates (new friends get the second one the first time). Set the subject to something like `Your Real SocialDads sign-in` and paste this as the body, so the email contains the link *and* a code:
 
 ```html
-<h2>Sign in to Kickabout</h2>
+<h2>Sign in to Real SocialDads</h2>
 <p><a href="{{ .ConfirmationURL }}">Tap here to sign in</a></p>
 <p>Or type this code into the app: <b>{{ .Token }}</b></p>
 <p>If you didn't ask for this, you can ignore this email.</p>
