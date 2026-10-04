@@ -8,9 +8,18 @@ const TEAM = { A: 'Blue', B: 'Orange' };
 const $app = document.getElementById('app');
 document.title = APP_NAME;
 
-const configured = !SUPABASE_URL.includes('YOUR-PROJECT') && !SUPABASE_ANON_KEY.includes('YOUR-ANON');
+// Tidy whatever was pasted into config.js: stray quotes/spaces, and any path on the end of the
+// URL (Supabase's dashboard shows ".../rest/v1/" in places, which breaks sign-in).
+const stripQuotes = (v) => String(v ?? '').trim().replace(/^['"`\u2018\u2019\u201C\u201D]+|['"`\u2018\u2019\u201C\u201D]+$/g, '').trim();
+function cleanUrl(v) {
+  const s = stripQuotes(v);
+  try { return new URL(s).origin; } catch { return s; }
+}
+const SB_URL = cleanUrl(SUPABASE_URL);
+const SB_KEY = stripQuotes(SUPABASE_ANON_KEY);
+const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SB_URL) && !SB_KEY.includes('YOUR-ANON') && SB_KEY.length > 20;
 const sb = configured
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { flowType: 'implicit', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true } })
+  ? createClient(SB_URL, SB_KEY, { auth: { flowType: 'implicit', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true } })
   : null;
 
 const state = {
@@ -127,7 +136,7 @@ async function enter(session) {
 /* ---------------------------------------------------------------- screens */
 function setupScreen() {
   return `<div class="hero"><div class="hero-in"><h1>Almost there</h1>
-    <p>Open <b>config.js</b> and add your Supabase project URL and anon key, then reload.</p>
+    <p>Open <b>config.js</b> and add your Supabase Project URL (like <b>https://abcd.supabase.co</b>) and your publishable key, then reload.</p>
     <p class="small-text">The README walks through every step.</p></div></div>`;
 }
 const GH_ICON = '<svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
