@@ -1,4 +1,4 @@
-// Real SocialDadss — weekly 5/6/7/8-a-side organiser.
+// Real SocialDads — weekly 5/6/7/8-a-side organiser.
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
@@ -691,7 +691,7 @@ const actions = {
     };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    a.download = `Real SocialDadss-backup-${today()}.json`;
+    a.download = `Real SocialDads-backup-${today()}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     toast('Backup downloaded');
