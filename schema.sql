@@ -1,5 +1,5 @@
 -- =====================================================================
--- Real SocialDadss: database schema for Supabase (Postgres)
+-- Real SocialDads: database schema for Supabase (Postgres)
 -- Run this whole file once in Supabase > SQL Editor > New query > Run.
 -- Safe to re-run: it uses "if not exists" / "create or replace" where possible.
 -- =====================================================================
