@@ -363,3 +363,7 @@ input[type=date]::-webkit-calendar-picker-indicator { margin: 0; }
 
 .team-style { min-width: 0; max-width: 100%; }
 .team-style input[type=text] { max-width: 100%; box-sizing: border-box; }
+
+.photo-row { display: flex; gap: 14px; align-items: center; }
+.photo-row .disc { width: 64px; height: 64px; font-size: 22px; flex: none; }
+label.btn { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
