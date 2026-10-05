@@ -162,7 +162,7 @@ function showLogin() {
   $app.innerHTML = `<div class="hero"><div class="hero-in">
     <div class="mini-pitch" aria-hidden="true"></div>
     <h1>${esc(APP_NAME)}</h1>
-    <p> Team Selection, weekly scores and player stats.</p>
+    <p>Fair teams, final scores and proper stats for the weekly game.</p>
     ${linkError && !ui.linkErrorShown ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one.</p>' : ''}
     <form data-form="send-link" class="login-form">
       <label class="field"><span>Your email</span>
@@ -470,12 +470,20 @@ function shareSection(m) {
     </div></section>`;
 }
 
+function teamGoalsRecorded(matchId, team, excludePlayerId = null) {
+  return rosterOf(matchId)
+    .filter((r) => r.team === team && r.player_id !== excludePlayerId && r.goals_recorded)
+    .reduce((sum, r) => sum + (Number(r.goals) || 0), 0);
+}
+
 function goalRow(r, m) {
   const p = player(r.player_id);
   const me = myPlayer();
   const isMe = me && me.id === r.player_id;
   const canEdit = isOrganiser() || isMe;
-  const max = r.team === 'A' ? m.score_a : m.score_b;
+  const teamScore = Number(r.team === 'A' ? m.score_a : m.score_b) || 0;
+  const otherGoals = teamGoalsRecorded(m.id, r.team, r.player_id);
+  const max = Math.max(0, teamScore - otherGoals);
   const right = canEdit
     ? `<input class="num" type="number" inputmode="numeric" min="0" max="${max}" value="${r.goals_recorded ? r.goals : ''}" placeholder="0" data-goals="${r.player_id}" aria-label="Goals scored by ${esc(p?.name)}">
        <button class="btn small" data-act="save-goals" data-m="${m.id}" data-pid="${r.player_id}">Save</button>`
@@ -846,6 +854,13 @@ const actions = {
     const input = document.querySelector(`input[data-goals="${el.dataset.pid}"]`);
     const v = input?.value === '' ? 0 : parseInt(input.value, 10);
     if (Number.isNaN(v) || v < 0) return toast('Enter a number of goals', true);
+
+    // On mobile, a focused number input can leave the virtual keyboard/touch
+    // state in an awkward state when the whole match view is replaced. Blur it
+    // before refreshing the data and DOM. The database remains the authority
+    // for the collective team-goal limit.
+    input?.blur();
+
     await busy(el, async () => {
       const { error } = await sb.rpc('set_goals', { p_match: el.dataset.m, p_player: el.dataset.pid, p_goals: v });
       if (error) throw error;
@@ -853,7 +868,20 @@ const actions = {
       await refresh();
     });
   },
-  pick(el) { ui.choice[el.dataset.m] = el.dataset.pid; route(true); },
+  pick(el) {
+    const matchId = el.dataset.m;
+    ui.choice[matchId] = el.dataset.pid;
+
+    // Do not replace the whole match page just to show a vote selection.
+    // Keeping the existing DOM is more reliable on mobile/touch browsers.
+    const list = el.closest('.vote-list');
+    list?.querySelectorAll('button[data-act="pick"]').forEach((button) => {
+      const selected = button === el;
+      button.setAttribute('aria-pressed', String(selected));
+    });
+    const cast = document.querySelector(`button[data-act="cast-vote"][data-m="${matchId}"]`);
+    if (cast) cast.disabled = false;
+  },
   async 'cast-vote'(el) {
     const pid = ui.choice[el.dataset.m];
     if (!pid) return;
