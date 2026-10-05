@@ -562,7 +562,7 @@ function viewNew() {
       <button class="${d.ruleType === 'together' ? 'on' : ''}" data-act="rule-type" data-v="together" aria-pressed="${d.ruleType === 'together'}">Play together<small>same team</small></button>
       <button class="${d.ruleType === 'apart' ? 'on' : ''}" data-act="rule-type" data-v="apart" aria-pressed="${d.ruleType === 'apart'}">Play apart<small>opposite teams</small></button>
     </div>
-    <p class="muted small-text" style="margin-bottom:8px">${d.ruleType === 'together' ? `Tap two or more players${d.rulePick.size ? ` (${d.rulePick.size} picked)` : ''}.` : `Tap exactly two players${d.rulePick.size ? ` (${d.rulePick.size} picked)` : ''}.`}</p>
+    <p class="muted small-text" id="rule-hint" style="margin-bottom:8px">${d.ruleType === 'together' ? `Tap two or more players${d.rulePick.size ? ` (${d.rulePick.size} picked)` : ''}.` : `Tap exactly two players${d.rulePick.size ? ` (${d.rulePick.size} picked)` : ''}.`}</p>
     <div class="chips">${picked.map((p) => `<label class="chip"><input type="checkbox" data-rulepick="${p.id}" ${d.rulePick.has(p.id) ? 'checked' : ''}><span>${disc(p)}${esc(p.name)}</span></label>`).join('')}</div>
     <button class="btn ghost block" style="margin-top:12px" data-act="add-rule" ${pickOk ? '' : 'disabled'}>Add rule</button>
   </section>` : '';
@@ -577,15 +577,15 @@ function viewNew() {
     <div class="rowhead"><h2>Who's playing?</h2><span class="count ${count === need ? 'ok' : count > need ? 'over' : ''}" aria-live="polite">${count} of ${need}</span></div>
     ${active.length ? `<div class="chips">${active.map((p) => `<label class="chip"><input type="checkbox" data-pick="${p.id}" ${d.selected.has(p.id) ? 'checked' : ''}><span>${disc(p)}${esc(p.name)}</span></label>`).join('')}</div>`
       : '<p class="muted">No active players yet. Approve friends in Admin, or add a guest below.</p>'}
-    <p class="muted small-text" style="margin:12px 0 0">${hint}</p>
+    <p class="muted small-text" id="pick-hint" style="margin:12px 0 0">${hint}</p>
     <div class="inline-add"><input type="text" id="new-guest" maxlength="40" placeholder="Guest's name" autocomplete="off" aria-label="Guest's name"><button class="btn ghost" data-act="add-guest-inline">Add guest</button></div>
   </section>
-  ${rulesCard}
+  <div id="rules-wrap">${rulesCard}</div>
   ${teamStyleCard('draft', ui.style.draft)}
-  ${d.teams ? '' : `<button class="btn block" data-act="draw" ${count === need ? '' : 'disabled'}>Draw teams</button>`}
+  <div id="draw-wrap">${d.teams ? '' : `<button class="btn block" data-act="draw" ${count === need ? '' : 'disabled'}>Draw teams</button>`}
   ${d.teams ? `<div id="drawn" style="margin-top:6px">${teams}
     <div class="btn-row"><button class="btn ghost" data-act="draw">Shuffle again</button><button class="btn" data-act="save-match">Save game</button></div>
-    <p class="muted small-text" style="text-align:center;margin-top:12px">Not happy? Shuffle again as many times as you like. Nothing is recorded until you tap Save game. Your draw rules stay in place.<br>The player at the back is just the first one drawn, so swap keepers between yourselves if needed.</p></div>` : ''}`;
+    <p class="muted small-text" style="text-align:center;margin-top:12px">Not happy? Shuffle again as many times as you like. Nothing is recorded until you tap Save game. Your draw rules stay in place.<br>The player at the back is just the first one drawn, so swap keepers between yourselves if needed.</p></div>` : ''}</div>`;
 }
 
 /* --------------------------------------------------------------- view: stats */
@@ -1010,6 +1010,16 @@ document.addEventListener('input', (e) => {
     document.querySelectorAll?.(`.half.${t.dataset.teamname} .team-tag`)?.forEach((el) => { el.textContent = tName(st, t.dataset.teamname); });
   }
 });
+// Update only the parts of the New game page that depend on the selection, so a tap never
+// rebuilds the chips, wipes a typed guest name or drops keyboard focus.
+function swapFromView(sels) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = viewNew();
+  for (const sel of sels) {
+    const a = document.querySelector(sel), b = tpl.content.querySelector(sel);
+    if (a && b) a.replaceWith(b);
+  }
+}
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'draft-date') ui.draft.date = t.value;
@@ -1025,12 +1035,20 @@ document.addEventListener('change', (e) => {
       if (before !== d.rules.together.length + d.rules.apart.length) toast(`Removed rules involving ${pname(id)}`);
     }
     d.teams = null;
-    route(true);
+    if (!document.getElementById('draw-wrap')) route(true);
+    else {
+      const cnt = document.querySelector('.count'), need = d.format * 2;
+      if (cnt) {
+        cnt.textContent = `${d.selected.size} of ${need}`;
+        cnt.className = `count ${d.selected.size === need ? 'ok' : d.selected.size > need ? 'over' : ''}`;
+      }
+      swapFromView(['#pick-hint', '#rules-wrap', '#draw-wrap']);
+    }
   }
   if (t.dataset?.rulepick) {
     const set = ui.draft.rulePick;
     t.checked ? set.add(t.dataset.rulepick) : set.delete(t.dataset.rulepick);
-    route(true);
+    swapFromView(['#rule-hint', '[data-act="add-rule"]']);
   }
 });
 

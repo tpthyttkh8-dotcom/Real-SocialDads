@@ -1,5 +1,7 @@
 -- Real SocialDads: prevent the recorded goals for one team exceeding the final score.
 -- Run this once in the Supabase SQL editor if the database is already installed.
+-- (This version fixes the earlier one, which failed with: column "id" does not exist.)
+-- Safe to run more than once. It only replaces one function; no data is changed.
 
 create or replace function public.set_goals(p_match uuid, p_player uuid, p_goals int)
 returns void language plpgsql security definer set search_path = public as $$
@@ -18,9 +20,10 @@ begin
 
   -- Lock the match-player rows while calculating the remaining allowance.
   -- This prevents simultaneous saves on different phones from exceeding the score.
+  -- (match_players has no "id" column: its key is match_id + player_id.)
   perform 1 from public.match_players
    where match_id = p_match
-   order by id
+   order by player_id
    for update;
 
   select * into mp from public.match_players where match_id = p_match and player_id = p_player;

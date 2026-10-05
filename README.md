@@ -230,3 +230,16 @@ supabase/migration_seasons_merge.sql  one-off update if you installed an earlier
 supabase/migration_lineup_order.sql   one-off update: keeps saved line-ups in the order they were drawn
 supabase/migration_team_names_colours.sql  one-off update: fun team names and colours
 ```
+
+## Keep-alive (stop the free Supabase project pausing)
+
+`.github/workflows/keepalive.yml` pings the database every 3 days.
+One-off setup: in GitHub go to **Settings -> Secrets and variables -> Actions -> New repository secret** and add
+`SUPABASE_URL` (e.g. `https://xxxx.supabase.co`, no trailing slash or `/rest/v1`) and `SUPABASE_KEY` (the publishable key).
+Then open the **Actions** tab, pick *Keep Supabase awake* and press **Run workflow** once to check it shows a green tick.
+Note: GitHub switches scheduled workflows off after 60 days with no repository activity; re-enable it from the Actions tab if that happens.
+If the project is ever paused, press **Restore** in the Supabase dashboard (your data is kept).
+
+## Goals rule (collective goals)
+
+Personal goals recorded for a team can't exceed that team's final score. Existing installs: run `supabase/migration_collective_goals.sql` once (the corrected version in this pack).

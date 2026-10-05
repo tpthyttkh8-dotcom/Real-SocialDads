@@ -277,7 +277,7 @@ begin
   -- the same remaining allowance and pushing the team total above its score.
   perform 1 from public.match_players
    where match_id = p_match
-   order by id
+   order by player_id
    for update;
 
   select * into mp from public.match_players where match_id = p_match and player_id = p_player;
