@@ -353,7 +353,14 @@ function shortNames(ids) {
   return out;
 }
 
-function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle() } = {}) {
+// One football per goal; 1 or 2 goals show that many balls, 3+ show a single ball with "×n".
+function ballsHTML(n) {
+  if (!n || n < 1) return '';
+  const inner = n <= 2 ? '⚽'.repeat(n) : `⚽<b>×${n}</b>`;
+  return `<span class="gl" aria-label="${plural(n, 'goal')}">${inner}</span>`;
+}
+
+function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null } = {}) {
   const me = myPlayer()?.id;
   const label = shortNames([...teamA, ...teamB]);
   const half = (team, ids) => {
@@ -365,7 +372,7 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
     const html = shown.map((line) => `<div class="row">${line.map((id) => {
       const p = player(id);
       const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
-      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}<span class="nm">${esc(label[id])}</span></div>`;
+      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></div>`;
     }).join('')}</div>`).join('');
     return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
   };
@@ -400,7 +407,10 @@ async function viewMatch(id) {
     ${drawnBy(m) ? `<p class="muted small-text">Teams drawn by ${esc(drawnBy(m))}</p>` : ''}`;
 
   const st = matchStyle(m);
-  const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), { score: done ? [m.score_a, m.score_b] : null, style: st });
+  const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), {
+    score: done ? [m.score_a, m.score_b] : null, style: st,
+    goals: done ? Object.fromEntries(roster.filter((r) => r.goals_recorded && r.goals > 0).map((r) => [r.player_id, r.goals])) : null,
+  });
 
   let scoreCard = '';
   if (org) {
