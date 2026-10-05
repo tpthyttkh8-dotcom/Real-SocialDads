@@ -641,6 +641,13 @@ function viewStats() {
 function viewMe() {
   const p = state.profile;
   return `<h1>Your profile</h1>
+  <section class="card photo-card">
+    <div class="photo-row">${disc({ name: p.display_name, avatar_url: p.avatar_url })}
+      <div><b>Your photo</b><p class="muted small-text" style="margin:2px 0 8px">Shown in a small circle on the pitch and in the stats. It's shrunk automatically.</p>
+        <div class="btn-row" style="margin:0"><label class="btn small" for="photo-file">${p.avatar_url ? 'Change photo' : 'Add photo'}</label>
+        ${p.avatar_url ? '<button class="btn ghost small" data-act="photo-remove">Remove</button>' : ''}</div>
+        <input type="file" id="photo-file" accept="image/*" hidden></div></div>
+  </section>
   <section class="card"><form data-form="rename">
     <label class="field"><span>Your name</span><input type="text" id="my-name" maxlength="40" value="${esc(p.display_name)}" autocomplete="name" required></label>
     <button class="btn block" type="submit">Save name</button>
@@ -878,6 +885,18 @@ const actions = {
       await refresh();
     });
   },
+  async 'photo-remove'(el) {
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_my_avatar', { p_url: null });
+      if (error) throw error;
+      await sb.storage.from('avatars').remove([`${state.session.user.id}/avatar.jpg`]);
+      const { data } = await sb.from('profiles').select('*').eq('id', state.session.user.id).single();
+      if (data) state.profile = data;
+      toast('Photo removed');
+      renderShell();
+      await refresh();
+    });
+  },
   pick(el) {
     const matchId = el.dataset.m;
     ui.choice[matchId] = el.dataset.pid;
@@ -1030,8 +1049,41 @@ function swapFromView(sels) {
     if (a && b) a.replaceWith(b);
   }
 }
+// Shrink a chosen picture to a 160x160 centred square JPEG (about 6-12 KB).
+async function shrinkPhoto(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch { bmp = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(file); }); }
+  const w = bmp.width, h = bmp.height, side = Math.min(w, h), SIZE = 160;
+  const c = document.createElement('canvas'); c.width = c.height = SIZE;
+  c.getContext('2d').drawImage(bmp, (w - side) / 2, (h - side) / 2, side, side, 0, 0, SIZE, SIZE);
+  const blob = await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
+  if (!blob) throw new Error('Could not read that picture');
+  return blob;
+}
+async function savePhoto(file) {
+  const uid = state.session.user.id;
+  try {
+    toast('Saving photo…');
+    const blob = await shrinkPhoto(file);
+    const path = `${uid}/avatar.jpg`;
+    const up = await sb.storage.from('avatars').upload(path, blob, { upsert: true, contentType: 'image/jpeg', cacheControl: '3600' });
+    if (up.error) throw up.error;
+    const url = `${sb.storage.from('avatars').getPublicUrl(path).data.publicUrl}?v=${Date.now()}`;
+    const { error } = await sb.rpc('set_my_avatar', { p_url: url });
+    if (error) throw error;
+    const { data } = await sb.from('profiles').select('*').eq('id', uid).single();
+    if (data) state.profile = data;
+    toast('Photo saved');
+    renderShell();
+    await refresh();
+  } catch (err) {
+    toast(/not found|function|bucket|policy/i.test(err.message || '') ? 'Photos need the one-off database update first (see README)' : (err.message || 'Could not save photo'), true);
+  }
+}
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.id === 'photo-file' && t.files?.[0]) { const f = t.files[0]; t.value = ''; savePhoto(f); return; }
   if (t.id === 'draft-date') ui.draft.date = t.value;
   if (t.dataset?.pick) {
     const d = ui.draft, id = t.dataset.pick;
