@@ -355,9 +355,11 @@ input[type=date]::-webkit-calendar-picker-indicator { margin: 0; }
 .team-style { border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 12px; }
 .team-style .ts-head { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .team-style input[type=text] { width: 100%; min-height: 48px; padding: 0 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--field); margin-bottom: 10px; }
-.swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
-.sw { position: relative; aspect-ratio: 1; min-height: 40px; border-radius: 50%; border: 2px solid transparent; background: var(--tc); box-shadow: inset 0 0 0 1px rgba(128,128,128,.55); cursor: pointer; padding: 0; color: var(--tc-on); font-weight: 700; display: grid; place-items: center; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; max-width: 100%; min-width: 0; }
+.sw { position: relative; width: 100%; max-width: 48px; justify-self: center; aspect-ratio: 1; min-width: 0; border-radius: 50%; border: 2px solid transparent; background: var(--tc); box-shadow: inset 0 0 0 1px rgba(128,128,128,.55); cursor: pointer; padding: 0; color: var(--tc-on); font-weight: 700; display: grid; place-items: center; }
 .sw span { visibility: hidden; font-size: 16px; }
 .sw[aria-pressed=true] { border-color: var(--ink); outline: 2px solid var(--card); outline-offset: -5px; }
 .sw[aria-pressed=true] span { visibility: visible; }
-@media (max-width: 380px) { .swatches { grid-template-columns: repeat(4, 1fr); } .sw { min-height: 44px; } }
+
+.team-style { min-width: 0; max-width: 100%; }
+.team-style input[type=text] { max-width: 100%; box-sizing: border-box; }
