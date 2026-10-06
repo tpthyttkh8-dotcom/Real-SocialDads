@@ -684,11 +684,11 @@ function inviteLink(token) {
 }
 function invitePanel() {
   const iv = ui.invite;
-  const g = iv && player(iv.id);
-  if (!g) { ui.invite = null; return ''; }
+  if (!iv) return '';
+  const g = { name: iv.name };
   const msg = `Hi ${g.name}! You're invited to join ${APP_NAME}. Open this link and sign in with your email, and your games and stats will be waiting: ${iv.url}`;
   return `<div class="merge-panel"><h3>Invite link for ${esc(g.name)}</h3>
-    <p class="small-text">Send this to ${esc(g.name)} only. It works once, for 14 days. When they open it and sign in with their email they're approved straight away and ${esc(g.name)}'s games, goals and awards move onto their login.</p>
+    <p class="small-text">Send this to ${esc(g.name)} only. It works once, for 14 days. When they open it and sign in with their email they're approved straight away${iv.isGuest ? ` and ${esc(g.name)}'s games, goals and awards move onto their login` : ''}.</p>
     <input type="text" readonly id="invite-url" value="${esc(iv.url)}" aria-label="Invite link" onfocus="this.select()">
     <div class="btn-row"><button class="btn" data-act="invite-copy">Copy link</button>
     <a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Send on WhatsApp</a>
@@ -721,6 +721,11 @@ function viewAdmin() {
       <button class="btn small" data-act="approve" data-id="${p.id}">Approve</button></li>`).join('')}</ul>`
       : '<p class="muted" style="margin:0">Nobody is waiting. Friends who sign in with GitHub will appear here.</p>'}
   </section>
+  <section class="card"><h2>Invite someone new</h2>
+    <p class="muted small-text">Makes a one-time link that skips the approval step. Send it only to the person it's for.</p>
+    <div class="inline-add"><input type="text" id="invite-new-name" maxlength="40" placeholder="Their name" autocomplete="off" aria-label="Their name"><button class="btn" data-act="invite-new">Create link</button></div>
+    ${ui.invite && !ui.invite.isGuest ? invitePanel() : ''}
+  </section>
   <section class="card"><h2>Members</h2>
     <p class="muted small-text">Organisers can draw teams, enter scores and add guests. Admins can also approve people, manage members and delete games.</p>
     <ul class="plist">
@@ -732,7 +737,7 @@ function viewAdmin() {
   </ul></section>
   <section class="card"><h2>Players</h2>
     <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats. If a guest joins the group, use <b>Merge</b> to move their history onto their new login.</p>
-    ${mergePanel()}${invitePanel()}
+    ${mergePanel()}${ui.invite && ui.invite.isGuest ? invitePanel() : ''}
     <ul class="plist">${state.players.map((p) => `<li class="wrap">${disc(p)}<div class="who">${esc(p.name)}${p.profile_id ? '' : '<small>Guest</small>'}</div>
       <div class="acts"><button class="btn ghost small" data-act="toggle-active" data-id="${p.id}" data-v="${p.active ? 0 : 1}">${p.active ? 'Set inactive' : 'Set active'}</button>
       ${p.profile_id ? '' : `<button class="btn ghost small" data-act="invite-link" data-id="${p.id}">Invite link</button><button class="btn ghost small" data-act="merge-start" data-id="${p.id}">Merge…</button>`}</div></li>`).join('')}</ul>
@@ -842,7 +847,7 @@ const actions = {
     await busy(el, async () => {
       const { data, error } = await sb.rpc('create_invite', { p_player: el.dataset.id });
       if (error) throw error;
-      ui.invite = { id: el.dataset.id, url: inviteLink(data) };
+      ui.invite = { id: el.dataset.id, name: player(el.dataset.id)?.name || 'there', isGuest: true, url: inviteLink(data) };
       ui.merge = null;
       route(true);
     });
@@ -852,6 +857,17 @@ const actions = {
     if (!url) return;
     try { await navigator.clipboard.writeText(url); toast('Link copied'); }
     catch { const i = document.getElementById('invite-url'); i?.select(); toast('Press and hold the link to copy it'); }
+  },
+  async 'invite-new'(el) {
+    const name = document.getElementById('invite-new-name').value.trim();
+    if (!name) return toast('Enter their name first', true);
+    await busy(el, async () => {
+      const { data, error } = await sb.rpc('create_invite_new', { p_name: name });
+      if (error) throw error;
+      ui.invite = { name, isGuest: false, url: inviteLink(data) };
+      ui.merge = null;
+      route(true);
+    });
   },
   'invite-close'() { ui.invite = null; route(true); },
   'merge-start'(el) { ui.merge = el.dataset.id; ui.invite = null; route(true); },
@@ -1055,6 +1071,9 @@ const forms = {
     await busy(f.querySelector('button[type=submit]'), async () => {
       const { error } = await sb.rpc('set_my_name', { p_name: name });
       if (error) throw error;
+      const { data: check, error: chkErr } = await sb.from('profiles').select('*').eq('id', state.session.user.id).maybeSingle();
+      if (chkErr) throw chkErr;
+      if (!check || !check.name_confirmed) throw new Error('Your name did not save. Please try again, and tell the admin if it keeps happening.');
       state.enteredFor = null;
       await enter(state.session);
     });
