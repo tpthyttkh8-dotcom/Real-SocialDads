@@ -492,14 +492,187 @@ function shareText(m) {
   t += `${pal(st.A.colour).emoji} *${tName(st, 'A')}*\n${list('A')}\n\n${pal(st.B.colour).emoji} *${tName(st, 'B')}*\n${list('B')}\n\n${lineupUrl(m)}`;
   return t;
 }
+
+/* ------------------------------------------------- line-up picture (for WhatsApp) */
+const IMG_COLOURS = {
+  red: ['#c62828', '#ffffff'], orange: ['#c2410c', '#ffffff'], yellow: ['#f2c200', '#1a1a1a'], green: ['#1b8a3a', '#ffffff'],
+  blue: ['#1f5fd6', '#ffffff'], purple: ['#7b3fc4', '#ffffff'], black: ['#1a1a1a', '#ffffff'], white: ['#f4f4f4', '#1a1a1a'],
+};
+const loadImg = (url) => new Promise((ok) => {
+  const i = new Image();
+  const t = setTimeout(() => ok(null), 4000);
+  i.crossOrigin = 'anonymous';
+  i.onload = () => { clearTimeout(t); ok(i); };
+  i.onerror = () => { clearTimeout(t); ok(null); };
+  i.src = url;
+});
+
+// Draws the line-up picture. `data` = { title, line2, line3, score:[a,b]|null, teams:[{name, colour, rows:[[{label, initials, photo(Image|null), goals}]]}, {…}] }
+// Rows are listed back-to-front for each team (the first team defends the top goal).
+function drawLineupImage(data) {
+  const maxRows = Math.max(...data.teams.map((t) => t.rows.length));
+  const W = 1080, HEAD = 250, PH = 2 * (365 + 205 * (maxRows - 1)) - 10, H = HEAD + PH + 70;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  const FONT = '"Barlow Condensed", "Arial Narrow", system-ui, sans-serif';
+  const BODY = 'Barlow, system-ui, -apple-system, "Segoe UI", sans-serif';
+  const fit = (txt, max, size, weight, fam) => { // shrink text to fit a width
+    let sz = size; x.font = `${weight} ${sz}px ${fam}`;
+    while (x.measureText(txt).width > max && sz > 18) { sz -= 2; x.font = `${weight} ${sz}px ${fam}`; }
+    return sz;
+  };
+  const pill = (cx, cy, txt, bg, fg, size) => {
+    x.font = `700 ${size}px ${FONT}`; const w = x.measureText(txt).width + 44, h = size + 22;
+    x.fillStyle = 'rgba(255,255,255,.9)'; x.beginPath(); x.roundRect(cx - w / 2 - 4, cy - h / 2 - 4, w + 8, h + 8, h); x.fill();
+    x.fillStyle = bg; x.beginPath(); x.roundRect(cx - w / 2, cy - h / 2, w, h, h); x.fill();
+    x.fillStyle = fg; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(txt, cx, cy + 2);
+    return w;
+  };
+
+  // page + header
+  x.fillStyle = '#edf1f4'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#2f7d4e'; x.fillRect(0, 0, W, HEAD);
+  x.fillStyle = '#ffffff'; x.textAlign = 'center'; x.textBaseline = 'alphabetic';
+  fit(data.title, W - 100, 92, 700, FONT); x.fillText(data.title, W / 2, 112);
+  fit(data.line2, W - 100, 46, 600, BODY); x.fillText(data.line2, W / 2, 175);
+  x.globalAlpha = .85; fit(data.line3 || '', W - 100, 38, 500, BODY); x.fillText(data.line3 || '', W / 2, 226); x.globalAlpha = 1;
+
+  x.fillStyle = '#245f3b'; x.fillRect(0, HEAD - 6, W, 6);
+  // pitch
+  const py = HEAD, pm = 30;
+  x.fillStyle = '#2f7d4e'; x.fillRect(0, py, W, PH + 70);
+  for (let i = 0; i * 88 < PH + 70; i++) { x.fillStyle = i % 2 ? '#388a5a' : '#2f7d4e'; x.fillRect(0, py + i * 88, W, 88); }
+  x.strokeStyle = 'rgba(255,255,255,.85)'; x.lineWidth = 5;
+  const top = py + pm, bot = py + PH + 70 - pm, mid = (top + bot) / 2;
+  x.strokeRect(pm, top, W - 2 * pm, bot - top);
+  x.beginPath(); x.moveTo(pm, mid); x.lineTo(W - pm, mid); x.stroke();
+  x.beginPath(); x.arc(W / 2, mid, 110, 0, Math.PI * 2); x.stroke();
+  x.strokeRect(W / 2 - 200, top, 400, 120); x.strokeRect(W / 2 - 200, bot - 120, 400, 120);
+
+  const halfH = (bot - top) / 2;
+  data.teams.forEach((tm, ti) => {
+    const [bg, fg] = IMG_COLOURS[tm.colour] || IMG_COLOURS.blue;
+    const rows = ti === 1 ? [...tm.rows].reverse() : tm.rows;
+    // keep rows clear of the goal end, the tag, and the halfway circle/score
+    const first = ti === 0 ? top + 165 : mid + 205, last = ti === 0 ? mid - 205 : bot - 165;
+    rows.forEach((row, ri) => {
+      const cy = rows.length === 1 ? (first + last) / 2 : first + ((last - first) * ri) / (rows.length - 1);
+      row.forEach((p, pi) => {
+        const cx = (W * (pi + 0.5)) / row.length, r = 52;
+        x.save(); x.shadowColor = 'rgba(0,0,0,.4)'; x.shadowBlur = 12; x.shadowOffsetY = 4;
+        x.fillStyle = '#fff'; x.beginPath(); x.arc(cx, cy, r + 8, 0, Math.PI * 2); x.fill(); x.restore();
+        x.fillStyle = bg; x.beginPath(); x.arc(cx, cy, r + 6, 0, Math.PI * 2); x.fill();
+        x.save(); x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.clip();
+        x.fillStyle = '#fff'; x.fillRect(cx - r, cy - r, 2 * r, 2 * r);
+        if (p.photo) {
+          const sd = Math.min(p.photo.width, p.photo.height);
+          x.drawImage(p.photo, (p.photo.width - sd) / 2, (p.photo.height - sd) / 2, sd, sd, cx - r, cy - r, 2 * r, 2 * r);
+        } else {
+          x.fillStyle = '#14213d'; x.font = `700 44px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+          x.fillText(p.initials, cx, cy + 3);
+        }
+        x.restore();
+        // name
+        x.textAlign = 'center'; x.textBaseline = 'alphabetic';
+        const sz = fit(p.label, Math.min(300, W / row.length - 20), 34, 600, BODY);
+        x.save(); x.shadowColor = 'rgba(0,0,0,.75)'; x.shadowBlur = 6; x.shadowOffsetY = 2;
+        x.fillStyle = '#fff'; x.font = `600 ${sz}px ${BODY}`; x.fillText(p.label, cx, cy + r + 42); x.restore();
+        // goals: one ball each up to 2, then ball ×n
+        if (p.goals > 0) {
+          const txt = p.goals <= 2 ? '⚽'.repeat(p.goals) : `⚽ ×${p.goals}`;
+          x.font = `34px ${BODY}`; const w = x.measureText(txt).width + 22;
+          const bx = cx + r - 8, by = cy - r - 12;
+          x.fillStyle = 'rgba(255,255,255,.96)'; x.beginPath(); x.roundRect(bx, by - 22, w, 44, 22); x.fill();
+          x.fillStyle = '#14213d'; x.textAlign = 'left'; x.textBaseline = 'middle'; x.fillText(txt, bx + 11, by + 2);
+        }
+      });
+    });
+    // team tag
+    const tagY = ti === 0 ? top + 52 : bot - 52;
+    x.font = `700 40px ${FONT}`; const tw = Math.min(x.measureText(tm.name).width + 44, W - 140);
+    x.fillStyle = 'rgba(255,255,255,.9)'; x.beginPath(); x.roundRect(60 - 4, tagY - 30 - 4, tw + 8, 68, 34); x.fill();
+    x.fillStyle = bg; x.beginPath(); x.roundRect(60, tagY - 30, tw, 60, 30); x.fill();
+    x.fillStyle = fg; x.textAlign = 'left'; x.textBaseline = 'middle';
+    fit(tm.name, tw - 36, 40, 700, FONT); x.fillText(tm.name, 60 + 22, tagY + 2);
+  });
+
+  // score in the middle
+  if (data.score) {
+    const ca = IMG_COLOURS[data.teams[0].colour] || IMG_COLOURS.blue, cb = IMG_COLOURS[data.teams[1].colour] || IMG_COLOURS.blue;
+    pill(W / 2 - 100, mid, String(data.score[0]), ca[0], ca[1], 64);
+    pill(W / 2 + 100, mid, String(data.score[1]), cb[0], cb[1], 64);
+    x.fillStyle = '#fff'; x.font = `700 60px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('–', W / 2, mid + 2);
+  }
+  return c;
+}
+
+async function buildLineupImage(m) {
+  const roster = rosterOf(m.id);
+  const st = matchStyle(m);
+  const ids = roster.map((r) => r.player_id);
+  const label = shortNames(ids);
+  const done = m.status === 'completed';
+  try { await document.fonts?.load(`700 40px "Barlow Condensed"`); await document.fonts?.load(`600 30px Barlow`); } catch { /* fall back to system fonts */ }
+  const photos = {};
+  await Promise.all(ids.map(async (id) => { const u = player(id)?.avatar_url; if (u) photos[id] = await loadImg(u); }));
+  const make = (usePhotos) => {
+    const team = (t) => {
+      const mine = roster.filter((r) => r.team === t);
+      let k = 0;
+      const rows = rowsFor(mine.length).map((n) => mine.slice(k, (k += n)).map((r) => ({
+        label: label[r.player_id], initials: initials(player(r.player_id)?.name),
+        photo: usePhotos ? photos[r.player_id] || null : null,
+        goals: done && r.goals_recorded ? r.goals : 0,
+      })));
+      return { name: tName(st, t), colour: st[t].colour, rows };
+    };
+    return drawLineupImage({
+      title: APP_NAME,
+      line2: dateObj(m.played_on).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }),
+      line3: `${m.format}-a-side`,
+      score: done ? [m.score_a, m.score_b] : null,
+      teams: [team('A'), team('B')],
+    });
+  };
+  const toBlob = (c) => new Promise((ok) => c.toBlob(ok, 'image/png'));
+  let blob;
+  try { blob = await toBlob(make(true)); } catch { blob = null; }   // a photo that blocks export: retry without photos
+  if (!blob) blob = await toBlob(make(false));
+  return blob;
+}
+
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function shareCaption(m) {
+  const day = dateObj(m.played_on).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  const st = matchStyle(m);
+  let t = `⚽ *${APP_NAME}* – ${day}\n${m.format}-a-side`;
+  if (m.status === 'completed') t += `\nFinal score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}`;
+  return `${t}\n\n${lineupUrl(m)}`;
+}
+
 function shareSection(m) {
   const done = m.status === 'completed';
+  const mode = ui.shareMode === 'image' ? 'image' : 'text';
   return `<section class="card"><h2>${done ? 'Share the result' : 'Share the line-up'}</h2>
-    <p class="muted small-text">Opens WhatsApp with the teams ready to send. You choose the chat.</p>
+    <div class="seg two" style="margin:4px 0 12px">
+      <button class="${mode === 'text' ? 'on' : ''}" data-act="share-mode" data-v="text" aria-pressed="${mode === 'text'}">Text list<small>names as a message</small></button>
+      <button class="${mode === 'image' ? 'on' : ''}" data-act="share-mode" data-v="image" aria-pressed="${mode === 'image'}">Picture<small>the pitch with players</small></button>
+    </div>
+    ${mode === 'text' ? `<p class="muted small-text">Opens WhatsApp with the teams ready to send. You choose the chat.</p>
     <div class="btn-row">
       <a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(shareText(m))}" target="_blank" rel="noopener">Share to WhatsApp</a>
       <button class="btn ghost" data-act="copy-lineup" data-m="${m.id}">Copy text</button>
-    </div></section>`;
+    </div>` : `<p class="muted small-text">Makes a picture of the pitch. Choose WhatsApp (and the chat) from the share menu. The message starts with ${esc(APP_NAME)}, the date and the format.</p>
+    <div class="btn-row">
+      <button class="btn wa" data-act="share-image" data-m="${m.id}">Share picture</button>
+      <button class="btn ghost" data-act="save-image" data-m="${m.id}">Save picture</button>
+    </div>`}</section>`;
 }
 
 function teamGoalsRecorded(matchId, team, excludePlayerId = null) {
@@ -829,6 +1002,31 @@ const actions = {
       await loadAll();
       toast('Game saved');
       location.hash = '#/match/' + id;
+    });
+  },
+  'share-mode'(el) { ui.shareMode = el.dataset.v; route(true); },
+  async 'share-image'(el) {
+    const m = state.matches.find((x) => x.id === el.dataset.m);
+    if (!m) return;
+    await busy(el, async () => {
+      const blob = await buildLineupImage(m);
+      const file = new File([blob], `${APP_NAME.replace(/\s+/g, '-')}-${m.played_on}.png`, { type: 'image/png' });
+      if (navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], text: shareCaption(m) }); }
+        catch (e) { if (e?.name !== 'AbortError') throw e; }   // closing the share menu is fine
+      } else {
+        downloadBlob(blob, file.name);
+        toast('Picture saved. Attach it in WhatsApp');
+      }
+    });
+  },
+  async 'save-image'(el) {
+    const m = state.matches.find((x) => x.id === el.dataset.m);
+    if (!m) return;
+    await busy(el, async () => {
+      const blob = await buildLineupImage(m);
+      downloadBlob(blob, `${APP_NAME.replace(/\s+/g, '-')}-${m.played_on}.png`);
+      toast('Picture saved');
     });
   },
   async 'copy-lineup'(el) {
