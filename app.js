@@ -49,6 +49,18 @@ const ui = {
 };
 let routeToken = 0;
 const linkError = /error_description=|error_code=/.test(location.hash);
+// An invite link looks like  https://your-site/?invite=TOKEN . Remember it (it survives the email sign-in) and tidy the address bar.
+try {
+  const qs = new URLSearchParams(location.search);
+  const tok = qs.get('invite');
+  if (tok) {
+    localStorage.setItem('rsd_invite', tok.replace(/[^a-zA-Z0-9]/g, ''));
+    qs.delete('invite');
+    history.replaceState(null, '', location.pathname + (qs.toString() ? `?${qs}` : '') + location.hash);
+  }
+} catch { /* storage blocked: the invite just won't be auto-applied */ }
+const pendingInvite = () => { try { return localStorage.getItem('rsd_invite'); } catch { return null; } };
+const clearInvite = () => { try { localStorage.removeItem('rsd_invite'); } catch { /* ignore */ } };
 
 /* ------------------------------------------------------------------ helpers */
 function today() {
@@ -129,9 +141,18 @@ async function enter(session) {
   state.enteredFor = uid;
   $app.innerHTML = '<p class="boot">Loading…</p>';
   try {
+    const inviteTok = pendingInvite();
+    let welcome = null;
+    if (inviteTok) {
+      const { data: gName, error: invErr } = await sb.rpc('claim_invite', { p_token: inviteTok });
+      clearInvite();
+      if (invErr) setTimeout(() => toast(errMsg(invErr), true), 400);
+      else welcome = gName;
+    }
     const { data: profile, error } = await sb.from('profiles').select('*').eq('id', uid).maybeSingle();
     if (error) throw error;
     if (!profile) return showNoProfile();
+    if (welcome) setTimeout(() => toast(`Welcome, ${welcome}! Your games and stats are linked to you.`), 600);
     state.profile = profile;
     if (!profile.name_confirmed) return showNamePrompt();
     if (!profile.is_approved) return showPending();
@@ -163,6 +184,7 @@ function showLogin() {
     <div class="mini-pitch" aria-hidden="true"></div>
     <h1>${esc(APP_NAME)}</h1>
     <p>Fair teams, final scores and proper stats for the weekly game.</p>
+    ${pendingInvite() ? '<p class="notice" role="status">You\'ve been invited! Enter your email below to join. Your games and stats will be linked to you.</p>' : ''}
     ${linkError && !ui.linkErrorShown ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one.</p>' : ''}
     <form data-form="send-link" class="login-form">
       <label class="field"><span>Your email</span>
@@ -657,6 +679,22 @@ function viewMe() {
     <button class="btn ghost block" data-act="signout">Sign out</button></section>`;
 }
 
+function inviteLink(token) {
+  return `${location.origin}${location.pathname}?invite=${token}`;
+}
+function invitePanel() {
+  const iv = ui.invite;
+  const g = iv && player(iv.id);
+  if (!g) { ui.invite = null; return ''; }
+  const msg = `Hi ${g.name}! You're invited to join ${APP_NAME}. Open this link and sign in with your email, and your games and stats will be waiting: ${iv.url}`;
+  return `<div class="merge-panel"><h3>Invite link for ${esc(g.name)}</h3>
+    <p class="small-text">Send this to ${esc(g.name)} only. It works once, for 14 days. When they open it and sign in with their email they're approved straight away and ${esc(g.name)}'s games, goals and awards move onto their login.</p>
+    <input type="text" readonly id="invite-url" value="${esc(iv.url)}" aria-label="Invite link" onfocus="this.select()">
+    <div class="btn-row"><button class="btn" data-act="invite-copy">Copy link</button>
+    <a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Send on WhatsApp</a>
+    <button class="btn ghost" data-act="invite-close">Done</button></div></div>`;
+}
+
 function mergePanel() {
   const g = ui.merge && player(ui.merge);
   if (!g) { ui.merge = null; return ''; }
@@ -694,10 +732,10 @@ function viewAdmin() {
   </ul></section>
   <section class="card"><h2>Players</h2>
     <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats. If a guest joins the group, use <b>Merge</b> to move their history onto their new login.</p>
-    ${mergePanel()}
+    ${mergePanel()}${invitePanel()}
     <ul class="plist">${state.players.map((p) => `<li class="wrap">${disc(p)}<div class="who">${esc(p.name)}${p.profile_id ? '' : '<small>Guest</small>'}</div>
       <div class="acts"><button class="btn ghost small" data-act="toggle-active" data-id="${p.id}" data-v="${p.active ? 0 : 1}">${p.active ? 'Set inactive' : 'Set active'}</button>
-      ${p.profile_id ? '' : `<button class="btn ghost small" data-act="merge-start" data-id="${p.id}">Merge…</button>`}</div></li>`).join('')}</ul>
+      ${p.profile_id ? '' : `<button class="btn ghost small" data-act="invite-link" data-id="${p.id}">Invite link</button><button class="btn ghost small" data-act="merge-start" data-id="${p.id}">Merge…</button>`}</div></li>`).join('')}</ul>
     <div style="margin-top:14px"><label class="field"><span>Add a guest player</span><input type="text" id="guest-name" maxlength="40" placeholder="Name" autocomplete="off"></label>
     <button class="btn block" data-act="add-guest">Add player</button>
     <p class="muted small-text" style="margin:8px 0 0">Guests can be picked for teams and you can enter their goals, but they can't vote.</p></div>
@@ -800,7 +838,23 @@ const actions = {
     toast('Copied. Paste it into your chat');
   },
   year(el) { ui.year = +el.dataset.y; route(true); },
-  'merge-start'(el) { ui.merge = el.dataset.id; route(true); },
+  async 'invite-link'(el) {
+    await busy(el, async () => {
+      const { data, error } = await sb.rpc('create_invite', { p_player: el.dataset.id });
+      if (error) throw error;
+      ui.invite = { id: el.dataset.id, url: inviteLink(data) };
+      ui.merge = null;
+      route(true);
+    });
+  },
+  async 'invite-copy'(el) {
+    const url = ui.invite?.url;
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+    catch { const i = document.getElementById('invite-url'); i?.select(); toast('Press and hold the link to copy it'); }
+  },
+  'invite-close'() { ui.invite = null; route(true); },
+  'merge-start'(el) { ui.merge = el.dataset.id; ui.invite = null; route(true); },
   'merge-cancel'() { ui.merge = null; route(true); },
   async 'merge-confirm'(el) {
     const into = document.getElementById('merge-into')?.value;
