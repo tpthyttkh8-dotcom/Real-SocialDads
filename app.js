@@ -72,6 +72,8 @@ const fmtLong = (d) => dateObj(d).toLocaleDateString('en-GB', { weekday: 'long',
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const isAdmin = () => !!(state.profile?.is_admin && state.profile?.is_approved);
 const isOrganiser = () => !!(state.profile?.is_approved && (state.profile?.is_admin || state.profile?.can_organise));
+// Admins manage every game; organisers only the games they drew (created).
+const canManage = (m) => !!m && (isAdmin() || (isOrganiser() && m.created_by === state.session?.user?.id));
 const pname = (id) => player(id)?.name || 'a player';
 const player = (id) => state.players.find((p) => p.id === id);
 const myPlayer = () => state.players.find((p) => p.profile_id === state.session?.user?.id);
@@ -415,7 +417,7 @@ async function viewMatch(id) {
   const done = m.status === 'completed';
   const me = myPlayer();
   const mine = me && roster.find((r) => r.player_id === me.id);
-  const org = isOrganiser();
+  const org = canManage(m);
   const admin = isAdmin();
 
   let progress = null;
@@ -435,7 +437,8 @@ async function viewMatch(id) {
   });
 
   let scoreCard = '';
-  if (org) {
+  // any organiser can enter the final score; only this game's organiser (or an admin) can correct it afterwards
+  if (org || (!done && isOrganiser())) {
     scoreCard = `<section class="card"><h2>${done ? 'Final score' : 'Enter the final score'}</h2>
       <div class="score-entry">
         <label class="tc-${st.A.colour}"><span class="lbl-name"><i class="tdot"></i>${esc(tName(st, 'A'))}</span><input class="num" id="sa" type="number" inputmode="numeric" min="0" max="99" value="${done ? m.score_a : ''}" placeholder="0"></label>
@@ -455,7 +458,7 @@ async function viewMatch(id) {
         <ul class="plist">${rows.map((r) => goalRow(r, m)).join('')}</ul>`;
     };
     goalsCard = `<section class="card"><h2>Goals</h2>
-      <p class="muted small-text">${mine ? 'Add the goals you scored. Admins can fill in for anyone.' : 'Each player records their own goals.'}</p>
+      <p class="muted small-text">${org ? 'Players add their own goals. As this is your game, you can fill in for anyone.' : mine ? 'Add the goals you scored. The organiser who drew this game can fill in for anyone.' : 'Each player records their own goals.'}</p>
       ${team('A', A, m.score_a)}${team('B', B, m.score_b)}</section>`;
   }
 
@@ -466,7 +469,7 @@ async function viewMatch(id) {
   if (org) { ui.style[m.id] ||= matchStyle(m); styleCard = teamStyleCard(m.id, ui.style[m.id], m.id); }
   const shareCard = shareSection(m);
 
-  const del = admin ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button></p>` : '';
+  const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
   return head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
@@ -685,7 +688,7 @@ function goalRow(r, m) {
   const p = player(r.player_id);
   const me = myPlayer();
   const isMe = me && me.id === r.player_id;
-  const canEdit = isOrganiser() || isMe;
+  const canEdit = canManage(m) || isMe;
   const teamScore = Number(r.team === 'A' ? m.score_a : m.score_b) || 0;
   const otherGoals = teamGoalsRecorded(m.id, r.team, r.player_id);
   const max = Math.max(0, teamScore - otherGoals);
@@ -697,7 +700,7 @@ function goalRow(r, m) {
 }
 
 function motmSection(m, roster, mine, progress) {
-  const admin = isOrganiser();
+  const admin = canManage(m);
   let body = '';
   if (m.motm_closed) {
     const res = state.motm.filter((r) => r.match_id === m.id).sort((a, b) => b.votes - a.votes);
@@ -900,7 +903,7 @@ function viewAdmin() {
     ${ui.invite && !ui.invite.isGuest ? invitePanel() : ''}
   </section>
   <section class="card"><h2>Members</h2>
-    <p class="muted small-text">Organisers can draw teams, enter scores and add guests. Admins can also approve people, manage members and delete games.</p>
+    <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
     <ul class="plist">
     ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small></div>
       ${p.id === me ? '' : `<div class="acts">
@@ -1095,11 +1098,12 @@ const actions = {
     const id = el.dataset.m, st = ui.style[id];
     if (!st) return;
     await busy(el, async () => {
-      const { error } = await sb.from('matches').update({
+      const { data, error } = await sb.from('matches').update({
         team_a_name: st.A.name.trim() || null, team_a_colour: st.A.colour,
         team_b_name: st.B.name.trim() || null, team_b_colour: st.B.colour,
-      }).eq('id', id);
+      }).eq('id', id).select('id');
       if (error) throw error;
+      if (!data?.length) throw new Error('Only the organiser who drew this game (or an admin) can change it');
       delete ui.style[id];
       toast('Team names and colours saved');
       await refresh();
@@ -1129,7 +1133,7 @@ const actions = {
     const a = num('sa'), b = num('sb');
     if (a == null || b == null || a < 0 || b < 0) return toast('Enter a score for both teams', true);
     await busy(el, async () => {
-      const { error } = await sb.from('matches').update({ score_a: a, score_b: b, status: 'completed' }).eq('id', el.dataset.m);
+      const { error } = await sb.rpc('set_score', { p_match: el.dataset.m, p_a: a, p_b: b });
       if (error) throw error;
       toast('Score saved');
       await refresh();
@@ -1195,16 +1199,18 @@ const actions = {
     const closed = el.dataset.closed === '1';
     if (closed && !confirm('Close voting and reveal the result?')) return;
     await busy(el, async () => {
-      const { error } = await sb.from('matches').update({ motm_closed: closed }).eq('id', el.dataset.m);
+      const { data, error } = await sb.from('matches').update({ motm_closed: closed }).eq('id', el.dataset.m).select('id');
       if (error) throw error;
+      if (!data?.length) throw new Error('Only the organiser who drew this game (or an admin) can change voting');
       await refresh();
     });
   },
   async 'delete-match'(el) {
     if (!confirm('Delete this game and everything recorded for it? This can\'t be undone.')) return;
     await busy(el, async () => {
-      const { error } = await sb.from('matches').delete().eq('id', el.dataset.m);
+      const { data, error } = await sb.from('matches').delete().eq('id', el.dataset.m).select('id');
       if (error) throw error;
+      if (!data?.length) throw new Error('This game can no longer be deleted (only before the score is added, or by an admin)');
       await loadAll();
       toast('Game deleted');
       location.hash = '#/';
