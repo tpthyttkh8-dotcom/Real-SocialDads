@@ -243,3 +243,58 @@ If the project is ever paused, press **Restore** in the Supabase dashboard (your
 ## Goals rule (collective goals)
 
 Personal goals recorded for a team can't exceed that team's final score. Existing installs: run `supabase/migration_collective_goals.sql` once (the corrected version in this pack).
+
+## Profile photos (optional, tiny)
+
+Run `supabase/migration_photos.sql` once in the Supabase SQL Editor. Then each person can use **Profile -> Add photo**.
+Photos are shrunk on the phone to 160x160 (about 5-12 KB), stored in a Supabase Storage bucket called `avatars`
+(100 KB cap per file), and only the web address is kept in the database. 20 players use well under 1 MB of the 1 GB free storage.
+Until the SQL is run, adding a photo shows a friendly message and nothing breaks.
+
+## Invite links for guests
+
+Run `supabase/migration_invites.sql` once in the Supabase SQL Editor. Then in **Admin -> Players**, tap **Invite link** next to a guest,
+and copy it or send it on WhatsApp. When the guest opens the link and signs in with their email they are approved automatically and the guest's
+games, goals and man of the match awards move onto their new login (they take the guest's name and can change it on their profile).
+Each link works once and expires after 14 days; tapping Invite link again replaces the old one. Anyone holding an unused link can join,
+so send it privately. If the person can't be matched (e.g. they already played in the same game as the guest), they get a clear message and you can use **Merge** instead.
+
+### Invite someone new (not a guest)
+In **Admin -> Invite someone new**, type their name and tap **Create link** (needs the updated `migration_invites.sql`). The link works once and skips approval;
+they sign in with their email and are approved with that name. Send it only to the person it's for.
+
+## Sharing a game to WhatsApp (text or picture)
+
+On a game, the **Share** card has a choice: **Text list** (the names as a message, as before) or **Picture** (the pitch with players, colours, goals and score).
+For a picture, tap **Share picture** and choose WhatsApp from the phone's share menu, then the chat. The message starts with the app name, date and format.
+If a browser can't share pictures directly (some desktop browsers), the picture is saved instead and you attach it in WhatsApp. **Save picture** always saves it.
+
+## Who can do what
+
+- **Everyone (approved):** view games and stats, record their own goals, cast one anonymous man of the match vote, set their name and photo, share games.
+- **Organisers:** draw (create) games, add guests, and enter the final score on any game. On **games they drew** they can also correct the score, fill in goals for anyone,
+  name teams/colours, close or reopen voting, and delete the game until the final score is entered. On other people's games they are a normal player.
+- **Admins:** everything, on every game, plus members, invites, merging and backups.
+
+Existing installs: run `supabase/migration_organiser_scope.sql` once. Games saved before teams were drawn in the app (no creator recorded) can only be managed by admins.
+
+## Editing a saved line-up (drop-outs)
+
+Run `supabase/migration_edit_lineup.sql` once (after `migration_organiser_scope.sql`). On a game without a final score, the organiser who drew it
+(or an admin) sees **Line-up changes -> Edit line-up**. Tap a player, then either replace them (with someone not in the game, or a new guest)
+or swap them with a player on the other team. Teams always stay the same size and everyone else keeps their place on the pitch.
+
+## Who can see draw rules
+
+Run `supabase/migration_rules_visibility.sql` once in the Supabase SQL Editor (it's also in `schema.sql`). Then go to **Admin → Draw rules** and choose who can see a game's draw rules (like "Ben and Tom play apart") on the game page once teams are saved:
+
+- **Everyone** (the default, same as before)
+- **Organisers** and admins only
+- **Nobody**: not shown on game pages. Admins still get them in the backup file.
+
+Organisers always see the rules while drawing, and the New game page tells them who will see them. The setting is enforced by the database: the rules are kept in their own protected table, so a hidden rule can't be looked up another way. You can change the setting at any time and it applies to every game, old and new.
+
+
+## Release history
+
+- **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.

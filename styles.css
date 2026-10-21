@@ -218,6 +218,7 @@ input.num { width: 72px; text-align: center; font: 700 22px var(--display); padd
 
 .tok .nm { margin-top: 3px; color: #fff; font: 600 13px/1.15 var(--body); text-shadow: 0 1px 3px rgba(0,0,0,.75); max-width: 90px; text-align: center; overflow-wrap: anywhere; }
 .tok .gl { position: absolute; top: -7px; left: calc(50% + 15px); display: inline-flex; align-items: center; gap: 1px; padding: 1px 4px; border-radius: 999px; background: rgba(255,255,255,.95); box-shadow: 0 1px 3px rgba(0,0,0,.35); font-size: 13px; line-height: 1.2; color: #14213d; white-space: nowrap; z-index: 2; }
+.tok .mo { position: absolute; top: -6px; right: calc(50% + 14px); width: 24px; height: 24px; border-radius: 50%; background: #f5b301; color: #fff; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); display: grid; place-items: center; font-size: 13px; line-height: 1; z-index: 2; }
 .tok .gl b { font: 700 12px/1 var(--body); margin-left: 2px; }
 .tok.me .nm { text-decoration: underline; text-underline-offset: 2px; }
 .pitch.animate .tok { animation: drop .55s cubic-bezier(.2, 1.35, .4, 1) both; animation-delay: calc(var(--i) * 140ms + 150ms); }
@@ -367,3 +368,12 @@ input[type=date]::-webkit-calendar-picker-indicator { margin: 0; }
 .photo-row { display: flex; gap: 14px; align-items: center; }
 .photo-row .disc { width: 64px; height: 64px; font-size: 22px; flex: none; }
 label.btn { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+
+.vote-list.compact { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.vote-list.compact button { padding: 6px 8px; min-height: 44px; gap: 8px; font-size: 15px; }
+.vote-list.compact button .disc { width: 30px; height: 30px; font-size: 12px; }
+.vote-list.compact button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- admin setting: who can see draw rules ---------- */
+.seg.three { grid-template-columns: repeat(3, 1fr); }
+.warn-note { padding: 8px 12px; border-radius: 10px; border: 1.5px solid #e0a800; }

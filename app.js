@@ -77,7 +77,7 @@ const canManage = (m) => !!m && (isAdmin() || (isOrganiser() && m.created_by ===
 const pname = (id) => player(id)?.name || 'a player';
 const player = (id) => state.players.find((p) => p.id === id);
 const myPlayer = () => state.players.find((p) => p.profile_id === state.session?.user?.id);
-const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || '').join('') || '?';
+const initials = (n) => String(n || '?').replace(/[^\p{L}\p{N}\s'-]/gu, ' ').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() || '').join('') || '?';
 const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || '?';
 
 function disc(p) {
@@ -120,6 +120,12 @@ async function loadAll() {
   Object.assign(state, {
     players: pl, matches: ma, mp, ballots: new Set(bal.map((b) => b.match_id)), motm: mr, stats: st, profiles: pr,
   });
+  // Group settings + draw rules (migration_rules_visibility.sql). The database only returns the rules
+  // this person is allowed to see; if the tables aren't there yet, the rules still come with each game.
+  const [cfg, rules] = await Promise.all([sb.from('app_settings').select('key, value'), sb.from('match_rules').select('match_id, rules')]);
+  state.settingsMissing = !!cfg.error;
+  state.settings = Object.fromEntries((cfg.data || []).map((r) => [r.key, r.value]));
+  state.rules = Object.fromEntries((rules.data || []).map((r) => [r.match_id, r.rules]));
 }
 async function refresh(keepScroll = true) {
   await loadAll();
@@ -384,7 +390,9 @@ function ballsHTML(n) {
   return `<span class="gl" aria-label="${plural(n, 'goal')}">${inner}</span>`;
 }
 
-function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null } = {}) {
+const motmWinners = (m) => (m?.motm_closed ? new Set(state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => r.player_id)) : new Set());
+
+function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null, motm = null } = {}) {
   const me = myPlayer()?.id;
   const label = shortNames([...teamA, ...teamB]);
   const half = (team, ids) => {
@@ -396,7 +404,7 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
     const html = shown.map((line) => `<div class="row">${line.map((id) => {
       const p = player(id);
       const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
-      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></div>`;
+      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></div>`;
     }).join('')}</div>`).join('');
     return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
   };
@@ -434,6 +442,7 @@ async function viewMatch(id) {
   const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), {
     score: done ? [m.score_a, m.score_b] : null, style: st,
     goals: done ? Object.fromEntries(roster.filter((r) => r.goals_recorded && r.goals > 0).map((r) => [r.player_id, r.goals])) : null,
+    motm: done ? motmWinners(m) : null,
   });
 
   let scoreCard = '';
@@ -470,18 +479,64 @@ async function viewMatch(id) {
   const shareCard = shareSection(m);
 
   const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
-  return head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
+  const editCard = org && !done ? lineupEditCard(m, A, B, st) : '';
+  return head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
 function drawnBy(m) {
   return state.profiles.find((p) => p.id === m.created_by)?.display_name || '';
 }
 const ruleText = (type, ids) => type === 'together' ? `${ids.map(pname).join(', ')} play together` : `${pname(ids[0])} and ${pname(ids[1])} play apart`;
+// Edit a saved line-up (drop-outs): replace a player, or swap two players between the teams.
+function lineupEditCard(m, A, B, st) {
+  const ed = ui.edit && ui.edit.m === m.id ? ui.edit : null;
+  if (!ed) {
+    return `<section class="card"><h2>Line-up changes</h2>
+      <p class="muted small-text">Someone dropped out? Swap them for a sub without redrawing. Everyone else stays where they are.</p>
+      <button class="btn ghost block" data-act="edit-lineup" data-m="${m.id}">Edit line-up</button></section>`;
+  }
+  const btn = (r) => `<button data-act="edit-pick" data-m="${m.id}" data-pid="${r.player_id}" aria-pressed="${ed.pid === r.player_id}">${disc(player(r.player_id))}<span>${esc(pname(r.player_id))}</span></button>`;
+  const teamList = (t, rows) => `<div class="sub-h tc-${st[t].colour}"><i class="tdot"></i>${esc(tName(st, t))}</div><div class="vote-list compact">${rows.map(btn).join('')}</div>`;
+  let panel = '';
+  if (ed.pid) {
+    const pr = [...A, ...B].find((r) => r.player_id === ed.pid);
+    if (pr) {
+      const nm = esc(pname(ed.pid));
+      const inGame = new Set([...A, ...B].map((r) => r.player_id));
+      const subs = state.players.filter((p) => p.active && !inGame.has(p.id))
+        .sort((a, b) => (!!b.profile_id - !!a.profile_id) || a.name.localeCompare(b.name));
+      const other = pr.team === 'A' ? B : A, otherT = pr.team === 'A' ? 'B' : 'A';
+      panel = `<div class="merge-panel" id="edit-panel"><h3>Change ${nm}</h3>
+        <label class="field"><span>Replace with</span><select id="edit-sub"><option value="">Choose a player…</option>
+          ${subs.map((p) => `<option value="${p.id}">${esc(p.name)}${p.profile_id ? '' : ' (guest)'}</option>`).join('')}</select></label>
+        <button class="btn block" data-act="edit-replace" data-m="${m.id}">Replace ${nm}</button>
+        <div class="inline-add" style="margin-top:10px"><input type="text" id="edit-guest" maxlength="40" placeholder="Or a new guest's name" autocomplete="off" aria-label="New guest's name"><button class="btn ghost" data-act="edit-guest" data-m="${m.id}">Add &amp; replace</button></div>
+        <label class="field" style="margin-top:14px"><span>Or swap teams with someone from ${esc(tName(st, otherT))}</span><select id="edit-swap"><option value="">Choose a player…</option>
+          ${other.map((r) => `<option value="${r.player_id}">${esc(pname(r.player_id))}</option>`).join('')}</select></label>
+        <button class="btn ghost block" data-act="edit-swap" data-m="${m.id}">Swap teams</button></div>`;
+    }
+  }
+  return `<section class="card" id="edit-card"><h2>Edit line-up</h2>
+    <p class="muted small-text">Tap the player to change. Teams always stay the same size. You can edit until the final score is entered.</p>
+    ${panel}${teamList('A', A)}${teamList('B', B)}
+    <button class="btn block" data-act="edit-done">Done</button></section>`;
+}
+
+// Who can see a saved game's draw rules (Admin → Draw rules). Organisers always see them while drawing.
+const RULES_VIS = {
+  everyone: ['Everyone', 'all players', 'Everyone sees a game\'s draw rules on its page.'],
+  organisers: ['Organisers', 'and admins', 'Only organisers and admins see a game\'s draw rules on its page.'],
+  nobody: ['Nobody', 'hidden', 'Draw rules aren\'t shown on game pages to anyone. Admins still get them in the backup file.'],
+};
+const rulesVis = () => (RULES_VIS[state.settings?.draw_rules_visible] ? state.settings.draw_rules_visible : 'everyone');
+const canSeeRules = () => rulesVis() === 'everyone' || (rulesVis() === 'organisers' && isOrganiser());
+const matchRules = (m) => state.rules?.[m.id] || m.draw_rules || null;
 function rulesSummary(m) {
-  const r = m.draw_rules;
+  if (!canSeeRules()) return '';
+  const r = matchRules(m);
   if (!r || (!r.together?.length && !r.apart?.length)) return '';
   const items = [...(r.together || []).map((g) => ruleText('together', g)), ...(r.apart || []).map((g) => ruleText('apart', g))];
-  return `<section class="card"><h2>Draw rules</h2><p class="muted small-text">These conditions were set before the random draw.</p>
+  return `<section class="card"><h2>Draw rules</h2><p class="muted small-text">These conditions were set before the random draw.${rulesVis() === 'organisers' ? ' Only organisers and admins can see them.' : ''}</p>
     <ul class="rules">${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></section>`;
 }
 function lineupUrl(m) { return location.origin + location.pathname + '#/match/' + m.id; }
@@ -492,6 +547,8 @@ function shareText(m) {
   let t = `⚽ *${APP_NAME}* – ${day}\n${m.format}-a-side\n\n`;
   const st = matchStyle(m);
   if (m.status === 'completed') t += `Final score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}\n\n`;
+  const mw = [...motmWinners(m)].map(pname);
+  if (mw.length) t += `⭐ Man of the match: ${mw.join(' & ')}\n\n`;
   t += `${pal(st.A.colour).emoji} *${tName(st, 'A')}*\n${list('A')}\n\n${pal(st.B.colour).emoji} *${tName(st, 'B')}*\n${list('B')}\n\n${lineupUrl(m)}`;
   return t;
 }
@@ -575,6 +632,14 @@ function drawLineupImage(data) {
           x.fillText(p.initials, cx, cy + 3);
         }
         x.restore();
+        // man of the match: gold star badge, top-left of the circle
+        if (p.motm) {
+          const sx = cx - r + 2, sy = cy - r + 2;
+          x.save(); x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 6; x.shadowOffsetY = 2;
+          x.fillStyle = '#f5b301'; x.beginPath(); x.arc(sx, sy, 24, 0, Math.PI * 2); x.fill(); x.restore();
+          x.strokeStyle = '#fff'; x.lineWidth = 4; x.beginPath(); x.arc(sx, sy, 24, 0, Math.PI * 2); x.stroke();
+          x.fillStyle = '#ffffff'; x.font = `700 30px ${BODY}`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('★', sx, sy + 2);
+        }
         // name
         x.textAlign = 'center'; x.textBaseline = 'alphabetic';
         const sz = fit(p.label, Math.min(300, W / row.length - 20), 34, 600, BODY);
@@ -618,6 +683,7 @@ async function buildLineupImage(m) {
   try { await document.fonts?.load(`700 40px "Barlow Condensed"`); await document.fonts?.load(`600 30px Barlow`); } catch { /* fall back to system fonts */ }
   const photos = {};
   await Promise.all(ids.map(async (id) => { const u = player(id)?.avatar_url; if (u) photos[id] = await loadImg(u); }));
+  const winners = motmWinners(m);
   const make = (usePhotos) => {
     const team = (t) => {
       const mine = roster.filter((r) => r.team === t);
@@ -626,6 +692,7 @@ async function buildLineupImage(m) {
         label: label[r.player_id], initials: initials(player(r.player_id)?.name),
         photo: usePhotos ? photos[r.player_id] || null : null,
         goals: done && r.goals_recorded ? r.goals : 0,
+        motm: done && winners.has(r.player_id),
       })));
       return { name: tName(st, t), colour: st[t].colour, rows };
     };
@@ -644,6 +711,16 @@ async function buildLineupImage(m) {
   return blob;
 }
 
+async function lineupChange(el, fn, args, okMsg) {
+  await busy(el, async () => {
+    const { error } = await sb.rpc(fn, args);
+    if (error) throw error;
+    toast(okMsg);
+    ui.edit = { m: args.p_match, pid: null };
+    await refresh();
+  });
+}
+
 function downloadBlob(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
@@ -656,6 +733,8 @@ function shareCaption(m) {
   const st = matchStyle(m);
   let t = `⚽ *${APP_NAME}* – ${day}\n${m.format}-a-side`;
   if (m.status === 'completed') t += `\nFinal score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}`;
+  const mw = [...motmWinners(m)].map(pname);
+  if (mw.length) t += `\n⭐ Man of the match: ${mw.join(' & ')}`;
   return `${t}\n\n${lineupUrl(m)}`;
 }
 
@@ -764,7 +843,7 @@ function viewNew() {
   const rules = [...d.rules.together.map((g, i) => ['together', i, g]), ...d.rules.apart.map((g, i) => ['apart', i, g])];
   const pickOk = d.ruleType === 'together' ? d.rulePick.size >= 2 : d.rulePick.size === 2;
   const rulesCard = count >= 2 ? `<section class="card"><h2>Draw rules</h2>
-    <p class="muted small-text">Optional. Keep a guest with whoever invited them, or split two players who'd be too strong together. The rest is still random.</p>
+    <p class="muted small-text">Optional. Keep a guest with whoever invited them, or split two players who'd be too strong together. The rest is still random. ${{ everyone: 'Everyone will see them on the game page.', organisers: 'Only organisers and admins will see them on the game page.', nobody: 'They won\'t be shown on the game page.' }[rulesVis()]}</p>
     ${rules.length ? `<ul class="rules">${rules.map(([t, i, g]) => `<li><span>${esc(ruleText(t, g))}</span><button class="btn ghost small" data-act="remove-rule" data-type="${t}" data-i="${i}" aria-label="Remove rule: ${esc(ruleText(t, g))}">Remove</button></li>`).join('')}</ul>` : ''}
     <div class="seg two" style="margin:14px 0 10px">
       <button class="${d.ruleType === 'together' ? 'on' : ''}" data-act="rule-type" data-v="together" aria-pressed="${d.ruleType === 'together'}">Play together<small>same team</small></button>
@@ -921,6 +1000,12 @@ function viewAdmin() {
     <button class="btn block" data-act="add-guest">Add player</button>
     <p class="muted small-text" style="margin:8px 0 0">Guests can be picked for teams and you can enter their goals, but they can't vote.</p></div>
   </section>
+  <section class="card"><h2>Draw rules</h2>
+    <p class="muted small-text">Who can see a game's draw rules (like "Ben and Tom play apart") on the game page once the teams are saved. Organisers always see them while drawing.</p>
+    ${state.settingsMissing ? '<p class="small-text warn-note">This setting needs a quick database update: run <b>supabase/migration_rules_visibility.sql</b> in the Supabase SQL editor. Until then everyone can see them, as before.</p>' : ''}
+    <div class="seg three" role="group" aria-label="Who can see draw rules">${Object.entries(RULES_VIS).map(([k, [l, sub]]) => `<button class="${rulesVis() === k ? 'on' : ''}" data-act="rules-vis" data-v="${k}" aria-pressed="${rulesVis() === k}" ${state.settingsMissing ? 'disabled' : ''}>${l}<small>${sub}</small></button>`).join('')}</div>
+    <p class="muted small-text" style="margin:10px 0 0">${RULES_VIS[rulesVis()][2]}</p>
+  </section>
   <section class="card"><h2>Back up your data</h2>
     <p class="muted small-text">Downloads every game, line-up, score and goal tally as a file to keep. (Individual man of the match votes are never included.)</p>
     <button class="btn ghost block" data-act="backup">Download backup</button>
@@ -1007,6 +1092,38 @@ const actions = {
       location.hash = '#/match/' + id;
     });
   },
+  'edit-lineup'(el) { ui.edit = { m: el.dataset.m, pid: null }; route(true); },
+  'edit-done'() { ui.edit = null; route(true); },
+  'edit-pick'(el) {
+    ui.edit = { m: el.dataset.m, pid: ui.edit?.pid === el.dataset.pid ? null : el.dataset.pid };
+    route(true).then?.(() => document.getElementById('edit-panel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+  },
+  async 'edit-replace'(el) {
+    const sub = document.getElementById('edit-sub')?.value;
+    if (!sub) return toast('Choose who replaces them', true);
+    await lineupChange(el, 'replace_player', { p_match: el.dataset.m, p_out: ui.edit.pid, p_in: sub },
+      `${pname(sub)} is in for ${pname(ui.edit.pid)}`);
+  },
+  async 'edit-guest'(el) {
+    const name = document.getElementById('edit-guest')?.value.trim();
+    if (!name) return toast('Enter the guest\'s name', true);
+    await busy(el, async () => {
+      const { data, error } = await sb.from('players').insert({ name }).select('id').single();
+      if (error) throw error;
+      const out = ui.edit.pid;
+      const r = await sb.rpc('replace_player', { p_match: el.dataset.m, p_out: out, p_in: data.id });
+      if (r.error) { await refresh(); throw r.error; }
+      toast(`${name} is in for ${pname(out)}`);
+      ui.edit = { m: el.dataset.m, pid: null };
+      await refresh();
+    });
+  },
+  async 'edit-swap'(el) {
+    const other = document.getElementById('edit-swap')?.value;
+    if (!other) return toast('Choose who to swap with', true);
+    await lineupChange(el, 'swap_players', { p_match: el.dataset.m, p_a: ui.edit.pid, p_b: other },
+      `${pname(ui.edit.pid)} and ${pname(other)} swapped teams`);
+  },
   'share-mode'(el) { ui.shareMode = el.dataset.v; route(true); },
   async 'share-image'(el) {
     const m = state.matches.find((x) => x.id === el.dataset.m);
@@ -1044,6 +1161,14 @@ const actions = {
     toast('Copied. Paste it into your chat');
   },
   year(el) { ui.year = +el.dataset.y; route(true); },
+  async 'rules-vis'(el) {
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_setting', { p_key: 'draw_rules_visible', p_value: el.dataset.v });
+      if (error) throw error;
+      toast({ everyone: 'Draw rules: everyone can see them', organisers: 'Draw rules: organisers and admins only', nobody: 'Draw rules: hidden on game pages' }[el.dataset.v]);
+      await refresh();
+    });
+  },
   async 'invite-link'(el) {
     await busy(el, async () => {
       const { data, error } = await sb.rpc('create_invite', { p_player: el.dataset.id });
@@ -1116,7 +1241,7 @@ const actions = {
       matches: [...state.matches].reverse().map((m) => ({
         date: m.played_on, format: m.format, status: m.status,
         team_a: matchStyle(m).A.name || pal(matchStyle(m).A.colour).label, team_b: matchStyle(m).B.name || pal(matchStyle(m).B.colour).label, score_team_a: m.score_a, score_team_b: m.score_b, drawn_by: drawnBy(m) || null,
-        draw_rules: m.draw_rules ? [...(m.draw_rules.together || []).map((g) => ruleText('together', g)), ...(m.draw_rules.apart || []).map((g) => ruleText('apart', g))] : [],
+        draw_rules: matchRules(m) ? [...(matchRules(m).together || []).map((g) => ruleText('together', g)), ...(matchRules(m).apart || []).map((g) => ruleText('apart', g))] : [],
         man_of_the_match: state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => pname(r.player_id)),
         lineup: rosterOf(m.id).map((r) => ({ player: pname(r.player_id), team: tName(matchStyle(m), r.team), goals: r.goals_recorded ? r.goals : null })),
       })),
