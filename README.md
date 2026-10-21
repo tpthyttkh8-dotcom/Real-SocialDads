@@ -284,6 +284,15 @@ Run `supabase/migration_edit_lineup.sql` once (after `migration_organiser_scope.
 (or an admin) sees **Line-up changes -> Edit line-up**. Tap a player, then either replace them (with someone not in the game, or a new guest)
 or swap them with a player on the other team. Teams always stay the same size and everyone else keeps their place on the pitch.
 
+**After the final score is in, admins can still correct the line-up** (organisers can't). Open the game; **Line-up changes** is near the bottom.
+- **Replace** someone who didn't actually play: the new player takes their place in the team, along with any goals and man of the match votes recorded for that place.
+- **Swap** two players between teams: wins, losses and stats update straight away. A moved player's goals stay if they still fit their new team's score; otherwise they're cleared so the player can add them again.
+Needs `migration_admin_lineup.sql` (included in `migration_release_1.sql`).
+
+## Admin page: folding sections
+
+**Members**, **Players** and **Draw rules** fold away to keep the Admin page short. Tap the heading to open or close one; the summary on the right shows how many there are. They stay as you left them while the app is open, and Players opens by itself when you're merging a guest or making a guest's invite link. **Waiting for approval**, **Invite someone new** and **Back up your data** are always open.
+
 ## Who can see draw rules
 
 Run `supabase/migration_rules_visibility.sql` once in the Supabase SQL Editor (it's also in `schema.sql`). Then go to **Admin → Draw rules** and choose who can see a game's draw rules (like "Ben and Tom play apart") on the game page once teams are saved:
@@ -295,6 +304,8 @@ Run `supabase/migration_rules_visibility.sql` once in the Supabase SQL Editor (i
 Organisers always see the rules while drawing, and the New game page tells them who will see them. The setting is enforced by the database: the rules are kept in their own protected table, so a hidden rule can't be looked up another way. You can change the setting at any time and it applies to every game, old and new.
 
 
+
 ## Release history
 
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
+- **Release 1:** current look; edit a saved line-up for late drop-outs (replace or swap players), and admins can correct it after the final score; man of the match star on the shared picture; folding Members, Players and Draw rules sections in Admin. Includes the Pre-release draw rules setting.

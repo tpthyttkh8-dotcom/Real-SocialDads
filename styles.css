@@ -374,6 +374,17 @@ label.btn { cursor: pointer; display: inline-flex; align-items: center; justify-
 .vote-list.compact button .disc { width: 30px; height: 30px; font-size: 12px; }
 .vote-list.compact button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- folding admin sections (Members, Players) ---------- */
+details.fold > summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 44px; margin: -6px 0; cursor: pointer; border-radius: 8px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary h2 { margin: 0; }
+.fold-meta { margin-left: auto; color: var(--muted); font-size: 14px; text-align: right; }
+.chev { flex: none; width: 10px; height: 10px; border-right: 2.5px solid var(--muted); border-bottom: 2.5px solid var(--muted); transform: rotate(45deg); margin: -4px 4px 0 2px; transition: transform .2s; }
+details.fold[open] > summary .chev { transform: rotate(-135deg); margin-top: 4px; }
+details.fold > summary:hover .chev { border-color: var(--ink); }
+.fold-body { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+@media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+
 /* ---------- admin setting: who can see draw rules ---------- */
 .seg.three { grid-template-columns: repeat(3, 1fr); }
 .warn-note { padding: 8px 12px; border-radius: 10px; border: 1.5px solid #e0a800; }

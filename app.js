@@ -46,6 +46,7 @@ const ui = {
   merge: null,
   style: { draft: freshStyle() },
   choice: {},
+  fold: new Set(),   // which folding Admin sections are open
 };
 let routeToken = 0;
 const linkError = /error_description=|error_code=/.test(location.hash);
@@ -479,8 +480,10 @@ async function viewMatch(id) {
   const shareCard = shareSection(m);
 
   const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
-  const editCard = org && !done ? lineupEditCard(m, A, B, st) : '';
-  return head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
+  const editCard = (org && !done) || (admin && done) ? lineupEditCard(m, A, B, st) : '';
+  return done
+    ? head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + editCard + styleCard + del
+    : head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
 function drawnBy(m) {
@@ -490,9 +493,12 @@ const ruleText = (type, ids) => type === 'together' ? `${ids.map(pname).join(', 
 // Edit a saved line-up (drop-outs): replace a player, or swap two players between the teams.
 function lineupEditCard(m, A, B, st) {
   const ed = ui.edit && ui.edit.m === m.id ? ui.edit : null;
+  const done = m.status === 'completed';
   if (!ed) {
     return `<section class="card"><h2>Line-up changes</h2>
-      <p class="muted small-text">Someone dropped out? Swap them for a sub without redrawing. Everyone else stays where they are.</p>
+      <p class="muted small-text">${done
+        ? 'The score is in, but as an admin you can still correct who played. Results, stats and the pitch picture update straight away.'
+        : 'Someone dropped out? Swap them for a sub without redrawing. Everyone else stays where they are.'}</p>
       <button class="btn ghost block" data-act="edit-lineup" data-m="${m.id}">Edit line-up</button></section>`;
   }
   const btn = (r) => `<button data-act="edit-pick" data-m="${m.id}" data-pid="${r.player_id}" aria-pressed="${ed.pid === r.player_id}">${disc(player(r.player_id))}<span>${esc(pname(r.player_id))}</span></button>`;
@@ -517,7 +523,9 @@ function lineupEditCard(m, A, B, st) {
     }
   }
   return `<section class="card" id="edit-card"><h2>Edit line-up</h2>
-    <p class="muted small-text">Tap the player to change. Teams always stay the same size. You can edit until the final score is entered.</p>
+    <p class="muted small-text">${done
+      ? 'Tap the player to change. Replacing someone passes their goals and man of the match votes to the new player. Swapping teams updates wins and losses; a moved player\'s goals are cleared to re-enter if they no longer fit the new team\'s score.'
+      : 'Tap the player to change. Teams always stay the same size. You can edit until the final score is entered (admins can still correct it afterwards).'}</p>
     ${panel}${teamList('A', A)}${teamList('B', B)}
     <button class="btn block" data-act="edit-done">Done</button></section>`;
 }
@@ -964,12 +972,21 @@ function mergePanel() {
 }
 
 /* --------------------------------------------------------------- view: admin */
+// A section that folds away: tap the heading to open or close it. Remembered while the app is open.
+function fold(key, title, meta, body, forceOpen = false) {
+  const open = forceOpen || ui.fold.has(key);
+  return `<details class="card fold" data-fold="${key}" ${open ? 'open' : ''}>
+    <summary><h2>${title}</h2><span class="fold-meta">${meta}</span><i class="chev" aria-hidden="true"></i></summary>
+    <div class="fold-body">${body}</div></details>`;
+}
 function viewAdmin() {
   const me = state.session.user.id;
   const pending = state.profiles.filter((p) => !p.is_approved);
   const members = state.profiles.filter((p) => p.is_approved);
   const pName = (p) => p.display_name || p.github_username || p.email;
   const handle = (p) => (p.github_username ? '@' + p.github_username : p.email || '');
+  const guests = state.players.filter((p) => !p.profile_id).length;
+  const playerMeta = `${state.players.filter((p) => p.active).length} active, ${plural(guests, 'guest')}`;
   return `<h1>Admin</h1>
   <section class="card"><h2>Waiting for approval</h2>
     ${pending.length ? `<ul class="plist">${pending.map((p) => `<li>${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}</small></div>
@@ -981,17 +998,15 @@ function viewAdmin() {
     <div class="inline-add"><input type="text" id="invite-new-name" maxlength="40" placeholder="Their name" autocomplete="off" aria-label="Their name"><button class="btn" data-act="invite-new">Create link</button></div>
     ${ui.invite && !ui.invite.isGuest ? invitePanel() : ''}
   </section>
-  <section class="card"><h2>Members</h2>
-    <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
+  ${fold('members', 'Members', esc(plural(members.length, 'member')), `    <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
     <ul class="plist">
     ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small></div>
       ${p.id === me ? '' : `<div class="acts">
         ${p.is_admin ? '' : `<button class="btn ghost small" data-act="toggle-organiser" data-id="${p.id}" data-v="${p.can_organise ? 0 : 1}">${p.can_organise ? 'Stop drawing teams' : 'Let them draw teams'}</button>`}
         <button class="btn ghost small" data-act="toggle-admin" data-id="${p.id}" data-v="${p.is_admin ? 0 : 1}">${p.is_admin ? 'Remove admin' : 'Make admin'}</button>
         <button class="btn danger small" data-act="revoke" data-id="${p.id}">Remove</button></div>`}</li>`).join('')}
-  </ul></section>
-  <section class="card"><h2>Players</h2>
-    <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats. If a guest joins the group, use <b>Merge</b> to move their history onto their new login.</p>
+  </ul>`)}
+  ${fold('players', 'Players', esc(playerMeta), `    <p class="muted small-text">Inactive players don't appear when picking a game but keep their stats. If a guest joins the group, use <b>Merge</b> to move their history onto their new login.</p>
     ${mergePanel()}${ui.invite && ui.invite.isGuest ? invitePanel() : ''}
     <ul class="plist">${state.players.map((p) => `<li class="wrap">${disc(p)}<div class="who">${esc(p.name)}${p.profile_id ? '' : '<small>Guest</small>'}</div>
       <div class="acts"><button class="btn ghost small" data-act="toggle-active" data-id="${p.id}" data-v="${p.active ? 0 : 1}">${p.active ? 'Set inactive' : 'Set active'}</button>
@@ -999,13 +1014,11 @@ function viewAdmin() {
     <div style="margin-top:14px"><label class="field"><span>Add a guest player</span><input type="text" id="guest-name" maxlength="40" placeholder="Name" autocomplete="off"></label>
     <button class="btn block" data-act="add-guest">Add player</button>
     <p class="muted small-text" style="margin:8px 0 0">Guests can be picked for teams and you can enter their goals, but they can't vote.</p></div>
-  </section>
-  <section class="card"><h2>Draw rules</h2>
-    <p class="muted small-text">Who can see a game's draw rules (like "Ben and Tom play apart") on the game page once the teams are saved. Organisers always see them while drawing.</p>
+`, !!(ui.merge || ui.invite?.isGuest))}
+  ${fold('rules', 'Draw rules', esc(rulesVis() === 'organisers' ? 'Organisers and admins' : RULES_VIS[rulesVis()][0]), `    <p class="muted small-text">Who can see a game's draw rules (like "Ben and Tom play apart") on the game page once the teams are saved. Organisers always see them while drawing.</p>
     ${state.settingsMissing ? '<p class="small-text warn-note">This setting needs a quick database update: run <b>supabase/migration_rules_visibility.sql</b> in the Supabase SQL editor. Until then everyone can see them, as before.</p>' : ''}
     <div class="seg three" role="group" aria-label="Who can see draw rules">${Object.entries(RULES_VIS).map(([k, [l, sub]]) => `<button class="${rulesVis() === k ? 'on' : ''}" data-act="rules-vis" data-v="${k}" aria-pressed="${rulesVis() === k}" ${state.settingsMissing ? 'disabled' : ''}>${l}<small>${sub}</small></button>`).join('')}</div>
-    <p class="muted small-text" style="margin:10px 0 0">${RULES_VIS[rulesVis()][2]}</p>
-  </section>
+    <p class="muted small-text" style="margin:10px 0 0">${RULES_VIS[rulesVis()][2]}</p>`)}
   <section class="card"><h2>Back up your data</h2>
     <p class="muted small-text">Downloads every game, line-up, score and goal tally as a file to keep. (Individual man of the match votes are never included.)</p>
     <button class="btn ghost block" data-act="backup">Download backup</button>
@@ -1121,8 +1134,16 @@ const actions = {
   async 'edit-swap'(el) {
     const other = document.getElementById('edit-swap')?.value;
     if (!other) return toast('Choose who to swap with', true);
-    await lineupChange(el, 'swap_players', { p_match: el.dataset.m, p_a: ui.edit.pid, p_b: other },
-      `${pname(ui.edit.pid)} and ${pname(other)} swapped teams`);
+    const a = ui.edit.pid, mid = el.dataset.m;
+    const row = (pid) => state.mp.find((x) => x.match_id === mid && x.player_id === pid);
+    const hadGoals = [a, other].filter((pid) => row(pid)?.goals_recorded);
+    await lineupChange(el, 'swap_players', { p_match: mid, p_a: a, p_b: other },
+      `${pname(a)} and ${pname(other)} swapped teams`);
+    const m = state.matches.find((x) => x.id === mid);
+    if (m?.status === 'completed') {
+      const cleared = hadGoals.filter((pid) => !row(pid)?.goals_recorded);
+      if (cleared.length) toast(`Swapped. ${cleared.map(pname).join(' and ')} need${cleared.length === 1 ? 's' : ''} to add their goals again`);
+    }
   },
   'share-mode'(el) { ui.shareMode = el.dataset.v; route(true); },
   async 'share-image'(el) {
@@ -1427,6 +1448,12 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   forms[f.dataset.form]?.(f);
 });
+// remember which Admin sections are open (the toggle event doesn't bubble, so listen in the capture phase)
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!d.matches?.('details[data-fold]')) return;
+  d.open ? ui.fold.add(d.dataset.fold) : ui.fold.delete(d.dataset.fold);
+}, true);
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (el && actions[el.dataset.act]) actions[el.dataset.act](el, e);
