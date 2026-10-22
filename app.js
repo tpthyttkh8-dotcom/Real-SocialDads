@@ -60,6 +60,24 @@ try {
     history.replaceState(null, '', location.pathname + (qs.toString() ? `?${qs}` : '') + location.hash);
   }
 } catch { /* storage blocked: the invite just won't be auto-applied */ }
+// A sign-in link from the email looks like  https://your-site/?token_hash=…&type=email .
+// Work and university email systems open links to check them, which would use up a one-time link,
+// so the app never signs in when the page loads: it waits for a tap on "Finish signing in".
+let pendingLink = null;
+try {
+  const qs = new URLSearchParams(location.search);
+  const th = qs.get('token_hash');
+  if (th) {
+    const type = qs.get('type');
+    pendingLink = { token_hash: th.replace(/[^a-zA-Z0-9_-]/g, ''), type: ['email', 'magiclink', 'signup', 'invite'].includes(type) ? type : 'email' };
+    try { sessionStorage.setItem('rsd_link', JSON.stringify(pendingLink)); } catch { /* keep it in memory only */ }
+    qs.delete('token_hash'); qs.delete('type');
+    history.replaceState(null, '', location.pathname + (qs.toString() ? `?${qs}` : '') + location.hash);
+  } else {
+    pendingLink = JSON.parse(sessionStorage.getItem('rsd_link') || 'null'); // survives a refresh before the tap
+  }
+} catch { /* no link */ }
+const clearPendingLink = () => { pendingLink = null; try { sessionStorage.removeItem('rsd_link'); } catch { /* ignore */ } };
 const pendingInvite = () => { try { return localStorage.getItem('rsd_invite'); } catch { return null; } };
 const clearInvite = () => { try { localStorage.removeItem('rsd_invite'); } catch { /* ignore */ } };
 
@@ -145,7 +163,8 @@ async function boot() {
 
 async function enter(session) {
   const uid = session?.user?.id;
-  if (!uid) return showLogin();
+  if (!uid) return pendingLink ? showConfirmLink() : showLogin();
+  if (pendingLink) clearPendingLink();
   if (state.enteredFor === uid) return;
   state.enteredFor = uid;
   $app.innerHTML = '<p class="boot">Loading…</p>';
@@ -187,6 +206,16 @@ function setupScreen() {
 }
 const GH_ICON = '<svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
 
+function showConfirmLink() {
+  $app.innerHTML = `<div class="hero"><div class="hero-in">
+    <div class="mini-pitch" aria-hidden="true"></div>
+    <h1>${esc(APP_NAME)}</h1>
+    <p>Tap the button to finish signing in on this device.</p>
+    <button class="btn block" data-act="confirm-link">Finish signing in</button>
+    <p class="small-text muted" style="margin-top:12px">This extra tap stops work and university email systems from using up your sign-in link when they check it.</p>
+    <p style="margin-top:14px"><button class="btn ghost block" data-act="link-cancel">Use a different email</button></p>
+  </div></div>`;
+}
 function showLogin() {
   if (ui.loginEmail) return showCheckEmail(ui.loginEmail);
   $app.innerHTML = `<div class="hero"><div class="hero-in">
@@ -194,7 +223,7 @@ function showLogin() {
     <h1>${esc(APP_NAME)}</h1>
     <p>Fair teams, final scores and proper stats for the weekly game.</p>
     ${pendingInvite() ? '<p class="notice" role="status">You\'ve been invited! Enter your email below to join. Your games and stats will be linked to you.</p>' : ''}
-    ${linkError && !ui.linkErrorShown ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one.</p>' : ''}
+    ${(linkError && !ui.linkErrorShown) || ui.linkExpired ? '<p class="notice" role="alert">That sign-in link has expired or was already used. Enter your email to get a new one, or use the code from the email.</p>' : ''}
     <form data-form="send-link" class="login-form">
       <label class="field"><span>Your email</span>
         <input type="email" id="login-email" inputmode="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com" required></label>
@@ -204,6 +233,7 @@ function showLogin() {
     ${ENABLE_GITHUB ? `<p class="or">or</p><button class="btn ghost block" data-act="login-github">${GH_ICON} Continue with GitHub</button>` : ''}
   </div></div>`;
   ui.linkErrorShown = true;
+  ui.linkExpired = false;
 }
 function showCheckEmail(email) {
   $app.innerHTML = `<div class="hero"><div class="hero-in">
@@ -1037,6 +1067,17 @@ const actions = {
   },
   reload() { location.reload(); },
   'other-email'() { ui.loginEmail = null; showLogin(); },
+  async 'confirm-link'(el) {
+    const link = pendingLink;
+    if (!link) return showLogin();
+    await busy(el, async () => {
+      const { error } = await sb.auth.verifyOtp({ token_hash: link.token_hash, type: link.type });
+      clearPendingLink();
+      if (error) { ui.linkExpired = true; showLogin(); }
+      // on success the sign-in event takes over and opens the app
+    });
+  },
+  'link-cancel'() { clearPendingLink(); showLogin(); },
   async 'signout-now'() { await sb.auth.signOut(); },
   async signout() { if (confirm('Sign out of ' + APP_NAME + '?')) await sb.auth.signOut(); },
 

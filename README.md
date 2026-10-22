@@ -50,13 +50,13 @@ Supabase's built-in email service is for testing only: it sends about 2 emails a
 
 ```html
 <h2>Sign in to Real SocialDads</h2>
-<p><a href="{{ .ConfirmationURL }}">Tap here to sign in</a></p>
+<p><a href="{{ .SiteURL }}?token_hash={{ .TokenHash }}&type=email">Tap here to sign in</a></p>
 <p>Or type this code into the app: <b>{{ .Token }}</b></p>
 <p>If you didn't ask for this, you can ignore this email.</p>
 ```
 
 4. Go to **Authentication → URL Configuration** and set:
-   - **Site URL:** your GitHub Pages address
+   - **Site URL:** your GitHub Pages address, exactly, with the `/` at the end (the sign-in link in the email is built from it)
    - **Redirect URLs:** add `https://YOUR-USERNAME.github.io/YOUR-REPO/**`
 
 ### 5. First sign-in
@@ -305,7 +305,12 @@ Organisers always see the rules while drawing, and the New game page tells them 
 
 
 
+## Sign-in links and work or university email
+
+Some email systems (Microsoft 365 at many universities and workplaces, for example) open every link in an incoming email to check it's safe. A normal one-time sign-in link would be used up by that check before the person taps it. So the link in the sign-in email opens the site with a **Finish signing in** button, and the sign-in only happens when the person taps it. The 6-digit code in the same email works too. This needs the email templates from step 4.3 (the link uses `{{ .TokenHash }}`, not `{{ .ConfirmationURL }}`).
+
 ## Release history
 
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
+- **Release 1.1 (22 Oct 2026):** sign-in links survive work/university email scanners (tap **Finish signing in**). App files + new email templates; no database change.
 - **Release 1:** current look; edit a saved line-up for late drop-outs (replace or swap players), and admins can correct it after the final score; man of the match star on the shared picture; folding Members, Players and Draw rules sections in Admin. Includes the Pre-release draw rules setting.
