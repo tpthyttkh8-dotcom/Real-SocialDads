@@ -388,3 +388,11 @@ details.fold > summary:hover .chev { border-color: var(--ink); }
 /* ---------- admin setting: who can see draw rules ---------- */
 .seg.three { grid-template-columns: repeat(3, 1fr); }
 .warn-note { padding: 8px 12px; border-radius: 10px; border: 1.5px solid #e0a800; }
+
+/* ---------- add to home screen ---------- */
+.home-card h2 { font-size: 22px; margin-bottom: 4px; }
+.home-steps { margin: 8px 0 0; padding-left: 22px; display: grid; gap: 8px; }
+.home-steps li { padding-left: 2px; }
+.ico { display: inline-block; width: 18px; height: 18px; vertical-align: -3px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.home-tip { margin-top: 10px; }
+.home-note { margin: 8px 0 0; }

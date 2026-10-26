@@ -81,6 +81,88 @@ const clearPendingLink = () => { pendingLink = null; try { sessionStorage.remove
 const pendingInvite = () => { try { return localStorage.getItem('rsd_invite'); } catch { return null; } };
 const clearInvite = () => { try { localStorage.removeItem('rsd_invite'); } catch { /* ignore */ } };
 
+/* ------------------------------------------------- add to home screen (matched to the phone) */
+// Works out the phone and browser from what the browser reports about itself.
+// (window.__demoDevice is only set by the demo, to pretend to be another phone.)
+function deviceInfo() {
+  if (window.__demoDevice) return window.__demoDevice;
+  const ua = navigator.userAgent || '';
+  const ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1); // iPads report as a Mac
+  const android = /Android/i.test(ua);
+  const inApp = /FBAN|FBAV|Instagram|Line\/|Snapchat|; wv\)/.test(ua);
+  const browser = inApp ? 'inapp'
+    : ios ? (/CriOS/.test(ua) ? 'chrome' : /FxiOS/.test(ua) ? 'firefox' : /EdgiOS/.test(ua) ? 'edge' : 'safari')
+    : android ? (/SamsungBrowser/.test(ua) ? 'samsung' : /Firefox/.test(ua) ? 'firefox' : 'chrome') : 'other';
+  let standalone = false;
+  try { standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch { /* old browser */ }
+  return { os: ios ? 'ios' : android ? 'android' : 'computer', browser, standalone, ipad: ios && !/iPhone|iPod/.test(ua) };
+}
+// Chrome on Android can show its own "Install app" box: keep the offer until someone taps the button.
+let installOffer = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installOffer = e; if (state.ready) route(true); });
+window.addEventListener('appinstalled', () => { installOffer = null; setHomeHidden(); toast(`${APP_NAME} is on your home screen`); if (state.ready) route(true); });
+const HOME_KEY = 'rsd_home_hidden';
+const homeHidden = () => { try { return Date.now() < +(localStorage.getItem(HOME_KEY) || 0); } catch { return false; } };
+const setHomeHidden = (days = 30) => { try { localStorage.setItem(HOME_KEY, String(Date.now() + days * 864e5)); } catch { /* ignore */ } };
+const SHARE_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></svg>';
+const homeSteps = (os, browser) => {
+  const name = esc(APP_NAME);
+  if (browser === 'inapp') return [`You're looking at this inside another app. Open it in ${os === 'ios' ? 'Safari' : 'Chrome'} first: use that app's menu (often <b>•••</b> or the compass icon) and choose <b>Open in ${os === 'ios' ? 'Safari' : 'browser'}</b>`, 'Then come back to this page for the steps'];
+  if (os === 'ios') {
+    const share = browser === 'chrome' ? `Tap the <b>Share</b> button ${SHARE_ICON} in the address bar at the top`
+      : browser === 'firefox' || browser === 'edge' ? `Tap the menu (<b>☰</b> or <b>•••</b>), then <b>Share</b> ${SHARE_ICON}`
+      : null;
+    if (!share) { // Safari: newer iPhones put Share behind the menu button next to the web address
+      return ['Tap the menu button <b>☰</b> (three lines) next to the web address',
+        `Tap <b>Share</b> ${SHARE_ICON}`,
+        'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> and find it in the list',
+        'Tap <b>Add</b>',
+        `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`,
+        `Older iPhone? Tap the Share button ${SHARE_ICON} at the bottom of Safari instead of steps 1 and 2`];
+    }
+    return [share, 'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> or scroll down', 'Tap <b>Add</b>',
+      `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`];
+  }
+  if (os === 'android') {
+    if (browser === 'samsung') return ['Tap the menu <b>☰</b> at the bottom right', 'Tap <b>Add page to</b>, then <b>Home screen</b>', 'Tap <b>Add</b>', `Open ${name} from the new icon: you'll still be signed in`];
+    if (browser === 'firefox') return ['Tap the menu <b>⋮</b>', 'Tap <b>Install</b> (or <b>Add to Home screen</b>)', 'Tap <b>Add</b>', `Open ${name} from the new icon`];
+    return ['Tap the menu <b>⋮</b> at the top right of Chrome', 'Tap <b>Install app</b> or <b>Add to home screen</b>', 'Tap <b>Install</b>', `Open ${name} from the new icon: you'll still be signed in`];
+  }
+  return [];
+};
+const stepsList = (os, browser) => {
+  const steps = homeSteps(os, browser);
+  const note = /^Older iPhone\?/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
+  return `<ol class="home-steps">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>${note ? `<p class="muted small-text home-note">${note}</p>` : ''}`;
+};
+function homeCard() { // Matches page: phones only, not already on the home screen, not dismissed
+  const d = deviceInfo();
+  if (d.os === 'computer' || d.standalone || homeHidden()) return '';
+  const where = d.os === 'ios' ? (d.ipad ? 'iPad' : 'iPhone') : 'phone';
+  return `<section class="card home-card"><h2>Add ${esc(APP_NAME)} to your ${where}</h2>
+    <p class="muted small-text">It opens like an app, full screen, straight from your home screen.</p>
+    ${d.os === 'android' && installOffer
+      ? `<button class="btn block" data-act="install-app">Install app</button>`
+      : stepsList(d.os, d.browser)}
+    <div class="btn-row" style="margin-top:10px"><button class="btn ghost small" data-act="home-later">Not now</button></div></section>`;
+}
+function homeHowTo() { // Profile page: always available, with the other phone's steps for helping friends
+  const d = deviceInfo();
+  if (d.standalone) return `<section class="card"><h2>Home screen</h2><p class="muted" style="margin:0">You're using ${esc(APP_NAME)} from your home screen. ✓</p></section>`;
+  const tab = ui.homeTab || (d.os === 'computer' ? 'ios' : d.os);
+  const mine = tab === d.os;
+  const site = location.origin + location.pathname;
+  return `<section class="card"><h2>Add to your home screen</h2>
+    ${d.os === 'computer' ? `<p class="muted small-text">Open this link on your phone, then follow the steps for your phone:</p>
+      <div class="inline-add" style="margin:0 0 12px"><input type="text" readonly id="site-url" value="${esc(site)}" aria-label="Site link" onfocus="this.select()"><button class="btn ghost" data-act="copy-site">Copy</button></div>` : ''}
+    <div class="seg two" role="group" aria-label="Phone" style="margin-bottom:12px">
+      <button class="${tab === 'ios' ? 'on' : ''}" data-act="home-tab" data-v="ios" aria-pressed="${tab === 'ios'}">iPhone<small>${d.os === 'ios' ? 'your phone' : 'and iPad'}</small></button>
+      <button class="${tab === 'android' ? 'on' : ''}" data-act="home-tab" data-v="android" aria-pressed="${tab === 'android'}">Android<small>${d.os === 'android' ? 'your phone' : 'Samsung, Pixel…'}</small></button></div>
+    ${mine && d.os === 'android' && installOffer ? '<button class="btn block" data-act="install-app">Install app</button>' : stepsList(tab, mine ? d.browser : tab === 'ios' ? 'safari' : 'chrome')}
+    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}, handy for helping a friend.</p>`}
+  </section>`;
+}
+
 /* ------------------------------------------------------------------ helpers */
 function today() {
   return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -230,6 +312,8 @@ function showLogin() {
       <button class="btn block" type="submit">Email me a sign-in link</button>
     </form>
     <p class="small-text muted" style="margin-top:12px">No password needed. You'll stay signed in on this device.</p>
+    ${(() => { const d = deviceInfo(); return d.os === 'ios' && !d.standalone && d.browser !== 'inapp'
+      ? `<p class="small-text muted home-tip">On an iPhone? Add ${esc(APP_NAME)} to your Home Screen first (menu <b>☰</b> → Share ${SHARE_ICON} → Add to Home Screen), then sign in from the new icon, so you only sign in once.</p>` : ''; })()}
     ${ENABLE_GITHUB ? `<p class="or">or</p><button class="btn ghost block" data-act="login-github">${GH_ICON} Continue with GitHub</button>` : ''}
   </div></div>`;
   ui.linkErrorShown = true;
@@ -367,7 +451,7 @@ function viewMatches() {
       <p>${isOrganiser() && ui.year === curYear() ? 'A fresh season. Draw the first teams of the year.' : 'Nothing was played this year.'}</p>
       ${isOrganiser() && ui.year === curYear() ? '<a class="btn" href="#/new">Draw teams</a>' : ''}</div>`;
   }
-  return `<h1>Matches</h1>${picker}${list.map(matchCard).join('')}`;
+  return `<h1>Matches</h1>${homeCard()}${picker}${list.map(matchCard).join('')}`;
 }
 
 function matchCard(m) {
@@ -968,6 +1052,7 @@ function viewMe() {
     <button class="btn block" type="submit">Save name</button>
     <p class="muted small-text" style="margin:10px 0 0">Shown on the pitch and in the stats. Changing it updates your past games too.</p>
   </form></section>
+  ${homeHowTo()}
   <section class="card"><p style="margin:0 0 12px">Signed in as <b>${esc(p.email || '@' + p.github_username)}</b></p>
     <button class="btn ghost block" data-act="signout">Sign out</button></section>`;
 }
@@ -1067,6 +1152,23 @@ const actions = {
   },
   reload() { location.reload(); },
   'other-email'() { ui.loginEmail = null; showLogin(); },
+  async 'install-app'(el) {
+    if (!installOffer) return route(true);
+    const offer = installOffer;
+    await busy(el, async () => {
+      offer.prompt();
+      const { outcome } = await offer.userChoice;
+      installOffer = null;
+      if (outcome !== 'accepted') toast('No problem. You can add it later from your profile');
+      route(true);
+    });
+  },
+  'home-later'() { setHomeHidden(); toast('Hidden for now. The steps are in your profile any time'); route(true); },
+  'home-tab'(el) { ui.homeTab = el.dataset.v; route(true); },
+  async 'copy-site'() {
+    const v = document.getElementById('site-url')?.value || '';
+    try { await navigator.clipboard.writeText(v); toast('Link copied'); } catch { document.getElementById('site-url')?.select(); }
+  },
   async 'confirm-link'(el) {
     const link = pendingLink;
     if (!link) return showLogin();
