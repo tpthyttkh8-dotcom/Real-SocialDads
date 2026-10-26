@@ -118,7 +118,7 @@ const homeSteps = (os, browser) => {
         'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> and find it in the list',
         'Tap <b>Add</b>',
         `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`,
-        `Older iPhone? Tap the Share button ${SHARE_ICON} at the bottom of Safari instead of steps 1 and 2`];
+        `older iphone or iOS - Tap the Share button ${SHARE_ICON} at the bottom of Safari instead of steps 1 and 2`];
     }
     return [share, 'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> or scroll down', 'Tap <b>Add</b>',
       `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`];
@@ -132,7 +132,7 @@ const homeSteps = (os, browser) => {
 };
 const stepsList = (os, browser) => {
   const steps = homeSteps(os, browser);
-  const note = /^Older iPhone\?/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
+  const note = /^older iphone or iOS\?/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
   return `<ol class="home-steps">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>${note ? `<p class="muted small-text home-note">${note}</p>` : ''}`;
 };
 function homeCard() { // Matches page: phones only, not already on the home screen, not dismissed
@@ -159,7 +159,7 @@ function homeHowTo() { // Profile page: always available, with the other phone's
       <button class="${tab === 'ios' ? 'on' : ''}" data-act="home-tab" data-v="ios" aria-pressed="${tab === 'ios'}">iPhone<small>${d.os === 'ios' ? 'your phone' : 'and iPad'}</small></button>
       <button class="${tab === 'android' ? 'on' : ''}" data-act="home-tab" data-v="android" aria-pressed="${tab === 'android'}">Android<small>${d.os === 'android' ? 'your phone' : 'Samsung, Pixel…'}</small></button></div>
     ${mine && d.os === 'android' && installOffer ? '<button class="btn block" data-act="install-app">Install app</button>' : stepsList(tab, mine ? d.browser : tab === 'ios' ? 'safari' : 'chrome')}
-    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}, handy for helping a friend.</p>`}
+    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}</p>`}
   </section>`;
 }
 
