@@ -132,7 +132,7 @@ const homeSteps = (os, browser) => {
 };
 const stepsList = (os, browser) => {
   const steps = homeSteps(os, browser);
-  const note = /^older iphone or iOS\?/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
+  const note = /^older iphone or iOS\/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
   return `<ol class="home-steps">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>${note ? `<p class="muted small-text home-note">${note}</p>` : ''}`;
 };
 function homeCard() { // Matches page: phones only, not already on the home screen, not dismissed
