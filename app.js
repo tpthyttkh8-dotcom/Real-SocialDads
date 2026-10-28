@@ -105,6 +105,9 @@ const HOME_KEY = 'rsd_home_hidden';
 const homeHidden = () => { try { return Date.now() < +(localStorage.getItem(HOME_KEY) || 0); } catch { return false; } };
 const setHomeHidden = (days = 30) => { try { localStorage.setItem(HOME_KEY, String(Date.now() + days * 864e5)); } catch { /* ignore */ } };
 const SHARE_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></svg>';
+// The note shown under the iPhone (Safari) steps. Change the wording here as you like:
+// it always shows as a note under the list, never as a numbered step.
+const IPHONE_NOTE = `older iphone or iOS - Tap the Share button ${SHARE_ICON} at the bottom of Safari instead of steps 1 and 2`;
 const homeSteps = (os, browser) => {
   const name = esc(APP_NAME);
   if (browser === 'inapp') return [`You're looking at this inside another app. Open it in ${os === 'ios' ? 'Safari' : 'Chrome'} first: use that app's menu (often <b>•••</b> or the compass icon) and choose <b>Open in ${os === 'ios' ? 'Safari' : 'browser'}</b>`, 'Then come back to this page for the steps'];
@@ -117,8 +120,7 @@ const homeSteps = (os, browser) => {
         `Tap <b>Share</b> ${SHARE_ICON}`,
         'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> and find it in the list',
         'Tap <b>Add</b>',
-        `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`,
-        `older iphone or iOS - Tap the Share button ${SHARE_ICON} at the bottom of Safari instead of steps 1 and 2`];
+        `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`];
     }
     return [share, 'Tap <b>Add to Home Screen</b>. If you can\'t see it, tap <b>View More</b> or scroll down', 'Tap <b>Add</b>',
       `Open ${name} from the new icon and sign in once more: type the 6-digit code from the email (the link opens Safari, not the icon)`];
@@ -132,7 +134,7 @@ const homeSteps = (os, browser) => {
 };
 const stepsList = (os, browser) => {
   const steps = homeSteps(os, browser);
-  const note = /^older iphone or iOS/.test(steps[steps.length - 1] || '') ? steps.pop() : '';
+  const note = os === 'ios' && browser === 'safari' ? IPHONE_NOTE : '';
   return `<ol class="home-steps">${steps.map((t) => `<li>${t}</li>`).join('')}</ol>${note ? `<p class="muted small-text home-note">${note}</p>` : ''}`;
 };
 function homeCard() { // Matches page: phones only, not already on the home screen, not dismissed
@@ -159,8 +161,32 @@ function homeHowTo() { // Profile page: always available, with the other phone's
       <button class="${tab === 'ios' ? 'on' : ''}" data-act="home-tab" data-v="ios" aria-pressed="${tab === 'ios'}">iPhone<small>${d.os === 'ios' ? 'your phone' : 'and iPad'}</small></button>
       <button class="${tab === 'android' ? 'on' : ''}" data-act="home-tab" data-v="android" aria-pressed="${tab === 'android'}">Android<small>${d.os === 'android' ? 'your phone' : 'Samsung, Pixel…'}</small></button></div>
     ${mine && d.os === 'android' && installOffer ? '<button class="btn block" data-act="install-app">Install app</button>' : stepsList(tab, mine ? d.browser : tab === 'ios' ? 'safari' : 'chrome')}
-    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}</p>`}
+    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}, handy for helping a friend.</p>`}
   </section>`;
+}
+
+// When the app is opened from the home-screen icon, note the phone type and the date so admins can see
+// who has it set up (Admin → Members). Each person can only ever mark themselves, and only admins can read it.
+const HOME_MARK_KEY = 'rsd_home_marked';
+async function markHomeScreen() {
+  const d = deviceInfo(), uid = state.session?.user?.id;
+  if (!d.standalone || !uid) return;
+  const key = `${HOME_MARK_KEY}:${uid}`, day = today();
+  try { if (localStorage.getItem(key) === day) return; } catch { /* storage blocked: mark anyway */ }
+  const device = d.os === 'ios' ? (d.ipad ? 'ipad' : 'iphone') : d.os === 'android' ? 'android' : 'other';
+  const { error } = await sb.rpc('mark_home_screen', { p_device: device }); // before the SQL is run this just fails quietly
+  if (!error) try { localStorage.setItem(key, day); } catch { /* ignore */ }
+}
+// phones keep home-screen apps open in the background, so check again when it comes back to the front
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.ready) markHomeScreen().catch(() => {}); });
+const DEVICE_NAME = { iphone: 'iPhone', ipad: 'iPad', android: 'Android', other: 'Phone' };
+const localDay = (t) => new Date(new Date(t).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+function homeTag(p) { // one line under each member's name in Admin → Members
+  const h = state.home?.[p.id];
+  if (!h) return '<small class="hs">Not opened from the home screen yet</small>';
+  const n = Math.round((dateObj(today()) - dateObj(localDay(h.last_at))) / 864e5);
+  const when = n <= 0 ? 'today' : n === 1 ? 'yesterday' : n < 30 ? `${n} days ago` : `on ${dateObj(localDay(h.last_at)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+  return `<small class="hs yes${n >= 30 ? ' stale' : ''}"><span class="hs-dot" aria-hidden="true"></span>Home screen · ${DEVICE_NAME[h.device] || 'Phone'} · last opened ${when}</small>`;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -223,7 +249,10 @@ async function loadAll() {
   });
   // Group settings + draw rules (migration_rules_visibility.sql). The database only returns the rules
   // this person is allowed to see; if the tables aren't there yet, the rules still come with each game.
-  const [cfg, rules] = await Promise.all([sb.from('app_settings').select('key, value'), sb.from('match_rules').select('match_id, rules')]);
+  const [cfg, rules, hs] = await Promise.all([sb.from('app_settings').select('key, value'), sb.from('match_rules').select('match_id, rules'),
+    isAdmin() ? sb.from('home_screen').select('user_id, device, first_at, last_at') : Promise.resolve({ data: [] })]);
+  state.homeMissing = !!hs.error; // migration_home_screen.sql not run yet
+  state.home = Object.fromEntries((hs.data || []).map((r) => [r.user_id, r]));
   state.settingsMissing = !!cfg.error;
   state.settings = Object.fromEntries((cfg.data || []).map((r) => [r.key, r.value]));
   state.rules = Object.fromEntries((rules.data || []).map((r) => [r.match_id, r.rules]));
@@ -266,6 +295,7 @@ async function enter(session) {
     state.profile = profile;
     if (!profile.name_confirmed) return showNamePrompt();
     if (!profile.is_approved) return showPending();
+    markHomeScreen().catch(() => {});
     await loadAll();
     state.ready = true;
     renderShell();
@@ -1102,6 +1132,14 @@ function viewAdmin() {
   const handle = (p) => (p.github_username ? '@' + p.github_username : p.email || '');
   const guests = state.players.filter((p) => !p.profile_id).length;
   const playerMeta = `${state.players.filter((p) => p.active).length} active, ${plural(guests, 'guest')}`;
+  const homeCount = members.filter((p) => state.home?.[p.id]).length;
+  const notYet = members.filter((p) => !state.home?.[p.id]);
+  const homeSummary = state.homeMissing
+    ? '<p class="small-text warn-note">To see who has the app on their home screen, run <b>supabase/migration_home_screen.sql</b> in the Supabase SQL editor.</p>'
+    : `<div class="hs-sum"><div class="hs-num"><b>${homeCount}</b><span>of ${members.length}</span></div>
+      <div><b>have the app on their home screen</b><small>Someone counts once they open it from the icon. Only admins see this.</small></div></div>
+      ${notYet.length ? `<button class="btn ghost small" data-act="copy-home-nudge" style="margin:0 0 12px">Copy a reminder for the ${notYet.length === 1 ? 'one' : notYet.length} who haven't</button>` : ''}
+      ${ui.homeNudge ? `<textarea class="nudge-text" readonly rows="4" aria-label="Reminder to copy" onfocus="this.select()">${esc(ui.homeNudge)}</textarea>` : ''}`;
   return `<h1>Admin</h1>
   <section class="card"><h2>Waiting for approval</h2>
     ${pending.length ? `<ul class="plist">${pending.map((p) => `<li>${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}</small></div>
@@ -1113,9 +1151,10 @@ function viewAdmin() {
     <div class="inline-add"><input type="text" id="invite-new-name" maxlength="40" placeholder="Their name" autocomplete="off" aria-label="Their name"><button class="btn" data-act="invite-new">Create link</button></div>
     ${ui.invite && !ui.invite.isGuest ? invitePanel() : ''}
   </section>
-  ${fold('members', 'Members', esc(plural(members.length, 'member')), `    <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
+  ${fold('members', 'Members', esc(state.homeMissing ? plural(members.length, 'member') : `${homeCount} of ${members.length} on home screen`), `    ${homeSummary}
+    <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
     <ul class="plist">
-    ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small></div>
+    ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small>${state.homeMissing ? '' : homeTag(p)}</div>
       ${p.id === me ? '' : `<div class="acts">
         ${p.is_admin ? '' : `<button class="btn ghost small" data-act="toggle-organiser" data-id="${p.id}" data-v="${p.can_organise ? 0 : 1}">${p.can_organise ? 'Stop drawing teams' : 'Let them draw teams'}</button>`}
         <button class="btn ghost small" data-act="toggle-admin" data-id="${p.id}" data-v="${p.is_admin ? 0 : 1}">${p.is_admin ? 'Remove admin' : 'Make admin'}</button>
@@ -1165,6 +1204,13 @@ const actions = {
   },
   'home-later'() { setHomeHidden(); toast('Hidden for now. The steps are in your profile any time'); route(true); },
   'home-tab'(el) { ui.homeTab = el.dataset.v; route(true); },
+  async 'copy-home-nudge'() {
+    const names = state.profiles.filter((p) => p.is_approved && !state.home?.[p.id]).map((p) => firstName(p.display_name || p.email));
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] || '';
+    const text = `${list}: add ${APP_NAME} to your home screen so it opens like an app. Open ${location.origin + location.pathname} on your phone and follow the steps on the Matches page (or Profile → Add to your home screen).`;
+    try { await navigator.clipboard.writeText(text); ui.homeNudge = null; toast(`Reminder copied for ${names.length} ${names.length === 1 ? 'person' : 'people'}: paste it into WhatsApp`); }
+    catch { ui.homeNudge = text; route(true); } // copying blocked: show the text to copy by hand
+  },
   async 'copy-site'() {
     const v = document.getElementById('site-url')?.value || '';
     try { await navigator.clipboard.writeText(v); toast('Link copied'); } catch { document.getElementById('site-url')?.select(); }

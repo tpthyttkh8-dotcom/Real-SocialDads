@@ -229,6 +229,7 @@ supabase/schema.sql database tables, security rules, stats views (for a fresh in
 supabase/migration_seasons_merge.sql  one-off update if you installed an earlier version
 supabase/migration_lineup_order.sql   one-off update: keeps saved line-ups in the order they were drawn
 supabase/migration_team_names_colours.sql  one-off update: fun team names and colours
+supabase/migration_home_screen.sql    one-off update (Release 1.3): admins see who uses the app from the home screen
 ```
 
 ## Keep-alive (stop the free Supabase project pausing)
@@ -309,8 +310,20 @@ Organisers always see the rules while drawing, and the New game page tells them 
 
 Some email systems (Microsoft 365 at many universities and workplaces, for example) open every link in an incoming email to check it's safe. A normal one-time sign-in link would be used up by that check before the person taps it. So the link in the sign-in email opens the site with a **Finish signing in** button, and the sign-in only happens when the person taps it. The 6-digit code in the same email works too. This needs the email templates from step 4.3 (the link uses `{{ .TokenHash }}`, not `{{ .ConfirmationURL }}`).
 
+## Adding it to the home screen (Release 1.2)
+
+The site recognises iPhones/iPads and Android phones and shows the right steps: a card on the Matches page (hidden on computers, once it's on the home screen, or for 30 days after **Not now**) and **Profile → Add to your home screen** any time, with iPhone and Android tabs. Android phones using Chrome usually get a one-tap **Install app** button. On an iPhone the home-screen icon keeps its own sign-in, so people sign in once more there with the 6-digit code; the sign-in screen suggests adding it to the Home Screen first to avoid that.
+
+## Who has it on their home screen (Release 1.3)
+
+**Admin → Members** shows how many members have opened Real SocialDads from the icon on their home screen, and under each name their phone and when they last did. It's recorded automatically (at most once a day) when someone opens the app from the icon; the line fades after 30 days without one, in case they've deleted the icon. **Copy a reminder** gives you a WhatsApp message naming everyone who hasn't done it yet. Only admins can see any of this, and each person can only ever mark themselves. Needs `supabase/migration_home_screen.sql`.
+
+To change the wording of the note under the iPhone steps, edit the `IPHONE_NOTE` line in `app.js` (near the top of the home-screen section). It always shows under the list, whatever it says.
+
 ## Release history
 
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
-- **Release 1.1 (22 Oct 2026):** sign-in links survive work/university email scanners (tap **Finish signing in**). App files + new email templates; no database change.
+- **Release 1.3 (28 Oct 2026):** Admin → Members shows who has the app on their home screen (phone and last opened from the icon), with a count and a copyable WhatsApp reminder. Admin-only. Needs `migration_home_screen.sql`.
+- **Release 1.2 (26 Oct 2026):** add-to-home-screen how-to matched to the phone (iPhone / Android / already installed), one-tap Install app on Android Chrome. App files only.
+- **Release 1.1 (22 Oct 2026):** sign-in links survive work/university email scanners (tap **Finish signing in**). App files + new email templates. Plus `migration_view_security.sql`, which clears Supabase's "Security Definer View" warnings for `motm_results` and `player_stats`, and `migration_function_permissions.sql`, which stops signed-out visitors running any database function.
 - **Release 1:** current look; edit a saved line-up for late drop-outs (replace or swap players), and admins can correct it after the final score; man of the match star on the shared picture; folding Members, Players and Draw rules sections in Admin. Includes the Pre-release draw rules setting.
