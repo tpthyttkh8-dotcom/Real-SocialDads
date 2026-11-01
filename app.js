@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules } from './draw.js';
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r2-20261031a'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -178,7 +178,19 @@ async function markHomeScreen() {
   if (!error) try { localStorage.setItem(key, day); } catch { /* ignore */ }
 }
 // phones keep home-screen apps open in the background, so check again when it comes back to the front
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.ready) markHomeScreen().catch(() => {}); });
+// When anyone opens the app (browser or home-screen icon), note the time so admins can see who's been on
+// (Admin → Members, and "Still to do" on a finished game). At most every 15 minutes per phone; each person only ever marks themselves.
+const SEEN_KEY = 'rsd_seen';
+async function markSeen() {
+  const d = deviceInfo(), uid = state.session?.user?.id;
+  if (!uid) return;
+  const key = `${SEEN_KEY}:${uid}`;
+  try { if (Date.now() - +(localStorage.getItem(key) || 0) < 15 * 60000) return; } catch { /* storage blocked: mark anyway */ }
+  const device = d.os === 'ios' ? (d.ipad ? 'ipad' : 'iphone') : d.os === 'android' ? 'android' : d.os === 'computer' ? 'computer' : 'other';
+  const { error } = await sb.rpc('mark_seen', { p_via: d.standalone ? 'home_screen' : 'browser', p_device: device }); // before the SQL is run this just fails quietly
+  if (!error) try { localStorage.setItem(key, String(Date.now())); } catch { /* ignore */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.ready) { markHomeScreen().catch(() => {}); markSeen().catch(() => {}); } });
 const DEVICE_NAME = { iphone: 'iPhone', ipad: 'iPad', android: 'Android', other: 'Phone' };
 const localDay = (t) => new Date(new Date(t).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 function homeTag(p) { // one line under each member's name in Admin → Members
@@ -187,6 +199,18 @@ function homeTag(p) { // one line under each member's name in Admin → Members
   const n = Math.round((dateObj(today()) - dateObj(localDay(h.last_at))) / 864e5);
   const when = n <= 0 ? 'today' : n === 1 ? 'yesterday' : n < 30 ? `${n} days ago` : `on ${dateObj(localDay(h.last_at)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
   return `<small class="hs yes${n >= 30 ? ' stale' : ''}"><span class="hs-dot" aria-hidden="true"></span>Home screen · ${DEVICE_NAME[h.device] || 'Phone'} · last opened ${when}</small>`;
+}
+
+// "today 18:40", "yesterday 21:05", "Monday 19:30", "12 days ago"
+function seenText(t) {
+  const d = new Date(t);
+  const n = Math.round((dateObj(today()) - dateObj(localDay(t))) / 864e5);
+  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return n <= 0 ? `today ${hm}` : n === 1 ? `yesterday ${hm}` : n < 7 ? `${d.toLocaleDateString('en-GB', { weekday: 'long' })} ${hm}` : n < 30 ? `${n} days ago` : `on ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+}
+function seenTag(p) { // Admin → Members: when they were last on the app
+  const h = state.seen?.[p.id];
+  return `<small class="seen">${h ? `Last on ${seenText(h.last_at)} · ${h.via === 'home_screen' ? 'home-screen app' : 'browser'}` : 'No visit recorded yet'}</small>`;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -252,11 +276,31 @@ async function loadAll() {
   const [cfg, rules, hs] = await Promise.all([sb.from('app_settings').select('key, value'), sb.from('match_rules').select('match_id, rules'),
     isAdmin() ? sb.from('home_screen').select('user_id, device, first_at, last_at') : Promise.resolve({ data: [] })]);
   state.homeMissing = !!hs.error; // migration_home_screen.sql not run yet
+  // Release 2 (migration_release_2.sql): feature switches and the award list. Before the SQL is run,
+  // features stay admin-only previews and the standard awards are used.
+  const [fx, aw, seen] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
+    isAdmin() ? sb.from('last_seen').select('user_id, last_at, via, device') : Promise.resolve({ data: null })]);
+  state.seenMissing = !!seen.error;
+  state.seen = seen.data ? Object.fromEntries(seen.data.map((r) => [r.user_id, r])) : null; // admins only
+  state.featuresMissing = !!fx.error;
+  state.features = Object.fromEntries((fx.data || []).map((r) => [r.key, r.enabled]));
+  state.awardsMissing = !!aw.error;
+  state.awards = aw.error ? null : aw.data;
   state.home = Object.fromEntries((hs.data || []).map((r) => [r.user_id, r]));
   state.settingsMissing = !!cfg.error;
   state.settings = Object.fromEntries((cfg.data || []).map((r) => [r.key, r.value]));
   state.rules = Object.fromEntries((rules.data || []).map((r) => [r.match_id, r.rules]));
 }
+/* ------------------------------------------------- feature switches (Admin → Features) */
+const FEATURES = [
+  ['player_cards', '🃏 Player cards', 'Tap a name in Stats, on a saved game\'s pitch or on the Awards page to see form, win rate, best teammate and nemesis.'],
+  ['awards', '🏆 Awards page', 'Golden Boot, Star Man, Always the Bridesmaid and more, plus any awards you add. From the Stats page.'],
+  ['season_picture', '📸 Season picture', 'A picture of the season\'s award winners to share in WhatsApp, from the Stats and Awards pages.'],
+];
+const featureLive = (k) => !!state.features?.[k];
+// Admins can always see a feature (to try it out); everyone else only once it's live.
+const canSee = (k) => featureLive(k) || isAdmin();
+const previewNote = (k) => (featureLive(k) ? '' : `<p class="preview-note">Preview: only admins can see this. Switch it on in <a href="#/admin" data-act="open-fold" data-k="features">Admin → Features</a> when you're ready.</p>`);
 async function refresh(keepScroll = true) {
   await loadAll();
   await route(keepScroll);
@@ -296,6 +340,7 @@ async function enter(session) {
     if (!profile.name_confirmed) return showNamePrompt();
     if (!profile.is_approved) return showPending();
     markHomeScreen().catch(() => {});
+    markSeen().catch(() => {});
     await loadAll();
     state.ready = true;
     renderShell();
@@ -425,17 +470,20 @@ async function route(keepScroll = false) {
   let html;
   try {
     if ((seg === 'new' && !isOrganiser()) || (seg === 'admin' && !isAdmin())) { location.hash = '#/'; return; }
+    if ((seg === 'player' && !canSee('player_cards')) || (seg === 'awards' && !canSee('awards')) || (seg === 'awards' && arg === 'edit' && !isAdmin())) { location.hash = '#/stats'; return; }
     if (seg === 'match') html = await viewMatch(arg);
     else if (seg === 'new') html = viewNew();
     else if (seg === 'stats') html = viewStats();
     else if (seg === 'admin') html = viewAdmin();
     else if (seg === 'me') html = viewMe();
+    else if (seg === 'player') html = viewPlayer(arg);
+    else if (seg === 'awards') html = arg === 'edit' ? viewAwardsEdit() : viewAwards();
     else html = viewMatches();
   } catch (e) { console.error(e); html = `<div class="card empty"><h2>Something went wrong</h2><p>${esc(errMsg(e))}</p></div>`; }
   if (token !== routeToken) return;
   view.innerHTML = html;
   document.querySelectorAll('.tabs a').forEach((a) => {
-    const on = a.dataset.tab === (seg === 'match' ? '' : seg);
+    const on = a.dataset.tab === (seg === 'match' ? '' : seg === 'player' || seg === 'awards' ? 'stats' : seg);
     a.classList.toggle('on', on);
     on ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current');
   });
@@ -537,7 +585,7 @@ function ballsHTML(n) {
 
 const motmWinners = (m) => (m?.motm_closed ? new Set(state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => r.player_id)) : new Set());
 
-function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null, motm = null } = {}) {
+function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null, motm = null, links = false } = {}) {
   const me = myPlayer()?.id;
   const label = shortNames([...teamA, ...teamB]);
   const half = (team, ids) => {
@@ -549,7 +597,7 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
     const html = shown.map((line) => `<div class="row">${line.map((id) => {
       const p = player(id);
       const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
-      return `<div class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></div>`;
+      return `<${links ? `a href="#/player/${id}"` : 'div'} class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></${links ? 'a' : 'div'}>`;
     }).join('')}</div>`).join('');
     return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
   };
@@ -578,6 +626,11 @@ async function viewMatch(id) {
     const { data } = await sb.rpc('motm_progress', { p_match: id });
     progress = data?.[0] || null;
   }
+  let waiting = null; // who still has to vote: admins and this game's organiser only (never who anyone voted for)
+  if (done && !m.motm_closed && org) {
+    const { data, error } = await sb.rpc('motm_waiting', { p_match: id });
+    waiting = error ? null : (data || []).map((r) => r.player_id);
+  }
 
   const head = `<a class="back" href="#/">← Matches</a>
     <h1>${m.format}-a-side</h1><p class="muted" style="margin:-8px 0 4px">${esc(fmtLong(m.played_on))}</p>
@@ -587,7 +640,7 @@ async function viewMatch(id) {
   const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), {
     score: done ? [m.score_a, m.score_b] : null, style: st,
     goals: done ? Object.fromEntries(roster.filter((r) => r.goals_recorded && r.goals > 0).map((r) => [r.player_id, r.goals])) : null,
-    motm: done ? motmWinners(m) : null,
+    motm: done ? motmWinners(m) : null, links: done && canSee('player_cards'),
   });
 
   let scoreCard = '';
@@ -622,14 +675,41 @@ async function viewMatch(id) {
   let styleCard = '';
   if (org) { ui.style[m.id] ||= matchStyle(m); styleCard = teamStyleCard(m.id, ui.style[m.id], m.id); }
   const shareCard = shareSection(m);
+  const chaseCard = done && org ? chaseSection(m, roster, waiting) : '';
 
   const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
   const editCard = (org && !done) || (admin && done) ? lineupEditCard(m, A, B, st) : '';
   return done
-    ? head + pitch + shareCard + rulesCard + scoreCard + goalsCard + motmCard + editCard + styleCard + del
+    ? head + pitch + chaseCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + editCard + styleCard + del
     : head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
+// Finished game, for admins and the organiser who drew it: who still has to add goals or vote,
+// and (for admins) when each was last on the app.
+function seenFor(pid, m) {
+  const uid = player(pid)?.profile_id;
+  if (!state.seen || !uid) return null;
+  const h = state.seen[uid];
+  if (!h) return { text: 'Last on: no visit recorded yet', old: true };
+  const before = localDay(h.last_at) < m.played_on;
+  return { text: `Last on ${seenText(h.last_at)}${h.via === 'home_screen' ? ' (home screen)' : ''}${before ? ' · not since the game' : ''}`, old: before };
+}
+function chaseSection(m, roster, waiting) {
+  const member = (pid) => !!player(pid)?.profile_id;
+  const noGoals = roster.filter((r) => !r.goals_recorded).map((r) => r.player_id);
+  const goalsTodo = noGoals.filter(member), guestsTodo = noGoals.filter((pid) => !member(pid));
+  const voteTodo = waiting || [];
+  if (!goalsTodo.length && !guestsTodo.length && !voteTodo.length) return '';
+  const line = (pid) => { const s = seenFor(pid, m); return `<li>${disc(player(pid))}<div class="who">${esc(pname(pid))}${s ? `<small class="${s.old ? 'seen-old' : ''}">${esc(s.text)}</small>` : ''}</div></li>`; };
+  return `<section class="card chase"><h2>Still to do</h2>
+    <p class="muted small-text">Only admins and the organiser who drew this game see this.</p>
+    ${goalsTodo.length ? `<div class="sub-h">Goals not added yet<small>${goalsTodo.length}</small></div><ul class="plist">${goalsTodo.map(line).join('')}</ul>` : ''}
+    ${guestsTodo.length ? `<p class="muted small-text">Guests without goals: ${guestsTodo.map((pid) => esc(pname(pid))).join(', ')}. Add theirs in Goals below.</p>` : ''}
+    ${voteTodo.length ? `<div class="sub-h">Not voted for man of the match yet<small>${voteTodo.length}</small></div><ul class="plist">${voteTodo.map(line).join('')}</ul>` : ''}
+    ${goalsTodo.length || voteTodo.length ? `<button class="btn ghost block" data-act="copy-chase" data-m="${m.id}" style="margin-top:10px">Copy a reminder for WhatsApp</button>` : ''}
+    ${ui.chaseText?.m === m.id ? `<textarea class="nudge-text" readonly rows="5" aria-label="Reminder to copy" onfocus="this.select()" style="margin-top:10px">${esc(ui.chaseText.text)}</textarea>` : ''}
+  </section>`;
+}
 function drawnBy(m) {
   return state.profiles.find((p) => p.id === m.created_by)?.display_name || '';
 }
@@ -983,6 +1063,32 @@ function teamStyleCard(ctx, st, matchId = null) {
   </section>`;
 }
 
+/* ------------------------------------------------------------ balanced teams */
+// Strengths come from finished games (who played on which side, and the final score). They're only used to pick
+// fair teams, on the organiser's phone, and are never shown or saved for anyone.
+const BAL_MIN_GAMES = 4;
+const scoredGames = () => state.matches.filter((m) => m.status === 'completed' && m.score_a != null && m.score_b != null);
+function groupStrengths() {
+  const by = new Map(scoredGames().map((m) => [m.id, { A: [], B: [], scoreA: m.score_a, scoreB: m.score_b, date: m.played_on }]));
+  for (const r of state.mp) by.get(r.match_id)?.[r.team]?.push(r.player_id);
+  return playerStrengths([...by.values()], today());
+}
+const canBalance = () => scoredGames().length >= BAL_MIN_GAMES;
+const drawMode = () => (canBalance() ? (ui.drawMode || 'balanced') : 'random');
+function drawModeCard() {
+  const mode = drawMode(), ok = canBalance(), n = scoredGames().length;
+  const note = !ok ? `Balanced teams need ${plural(BAL_MIN_GAMES, 'game')} with a final score, and there ${n === 1 ? 'is' : 'are'} ${n} so far. Until then the draw is random.`
+    : mode === 'balanced' ? "Teams are evened out using past results, allowing for who people played with. New players and guests count as average. Nobody's own score is shown."
+    : 'Pure luck: anyone can end up with anyone.';
+  return `<section class="card"><h2>How to pick teams</h2>
+    <div class="seg two" style="margin:4px 0 10px" role="group" aria-label="How to pick teams">
+      <button class="${mode === 'balanced' ? 'on' : ''}" data-act="draw-mode" data-v="balanced" aria-pressed="${mode === 'balanced'}" ${ok ? '' : 'disabled'}>Balanced<small>fair on past results</small></button>
+      <button class="${mode === 'random' ? 'on' : ''}" data-act="draw-mode" data-v="random" aria-pressed="${mode === 'random'}">Random<small>pure luck</small></button>
+    </div>
+    <p class="muted small-text" style="margin:0">${note}</p></section>`;
+}
+const balanceLine = (d) => (d.balance == null ? '' : `<p class="balance-line"><span>Balance</span> <b>${Math.round(d.balance * 100)}%</b> / <b>${100 - Math.round(d.balance * 100)}%</b><small>Each team's chance of winning, from past results.</small></p>`);
+
 function viewNew() {
   const d = ui.draft;
   const need = d.format * 2;
@@ -995,7 +1101,7 @@ function viewNew() {
   const rules = [...d.rules.together.map((g, i) => ['together', i, g]), ...d.rules.apart.map((g, i) => ['apart', i, g])];
   const pickOk = d.ruleType === 'together' ? d.rulePick.size >= 2 : d.rulePick.size === 2;
   const rulesCard = count >= 2 ? `<section class="card"><h2>Draw rules</h2>
-    <p class="muted small-text">Optional. Keep a guest with whoever invited them, or split two players who'd be too strong together. The rest is still random. ${{ everyone: 'Everyone will see them on the game page.', organisers: 'Only organisers and admins will see them on the game page.', nobody: 'They won\'t be shown on the game page.' }[rulesVis()]}</p>
+    <p class="muted small-text">Optional. Keep a guest with whoever invited them, or split two players who'd be too strong together. ${drawMode() === 'balanced' ? 'The teams are still balanced around them.' : 'The rest is still random.'} ${{ everyone: 'Everyone will see them on the game page.', organisers: 'Only organisers and admins will see them on the game page.', nobody: 'They won\'t be shown on the game page.' }[rulesVis()]}</p>
     ${rules.length ? `<ul class="rules">${rules.map(([t, i, g]) => `<li><span>${esc(ruleText(t, g))}</span><button class="btn ghost small" data-act="remove-rule" data-type="${t}" data-i="${i}" aria-label="Remove rule: ${esc(ruleText(t, g))}">Remove</button></li>`).join('')}</ul>` : ''}
     <div class="seg two" style="margin:14px 0 10px">
       <button class="${d.ruleType === 'together' ? 'on' : ''}" data-act="rule-type" data-v="together" aria-pressed="${d.ruleType === 'together'}">Play together<small>same team</small></button>
@@ -1020,11 +1126,12 @@ function viewNew() {
     <div class="inline-add"><input type="text" id="new-guest" maxlength="40" placeholder="Guest's name" autocomplete="off" aria-label="Guest's name"><button class="btn ghost" data-act="add-guest-inline">Add guest</button></div>
   </section>
   <div id="rules-wrap">${rulesCard}</div>
+  ${drawModeCard()}
   ${teamStyleCard('draft', ui.style.draft)}
   <div id="draw-wrap">${d.teams ? '' : `<button class="btn block" data-act="draw" ${count === need ? '' : 'disabled'}>Draw teams</button>`}
-  ${d.teams ? `<div id="drawn" style="margin-top:6px">${teams}
+  ${d.teams ? `<div id="drawn" style="margin-top:6px">${teams}${balanceLine(d)}
     <div class="btn-row"><button class="btn ghost" data-act="draw">Shuffle again</button><button class="btn" data-act="save-match">Save game</button></div>
-    <p class="muted small-text" style="text-align:center;margin-top:12px">Not happy? Shuffle again as many times as you like. Nothing is recorded until you tap Save game. Your draw rules stay in place.<br>The player at the back is just the first one drawn, so swap keepers between yourselves if needed.</p></div>` : ''}</div>`;
+    <p class="muted small-text" style="text-align:center;margin-top:12px">Not happy? Shuffle again as many times as you like${d.balance != null ? ': every shuffle is another fair split' : ''}. Nothing is recorded until you tap Save game. Your draw rules stay in place.<br>The player at the back is just the first one drawn, so swap keepers between yourselves if needed.</p></div>` : ''}</div>`;
 }
 
 /* --------------------------------------------------------------- view: stats */
@@ -1055,15 +1162,270 @@ function viewStats() {
   const { key, dir } = ui.sort;
   rows.sort((a, b) => key === 'name' ? a.name.localeCompare(b.name) * -dir : (b[key] - a[key]) * -dir || b.wins - a.wins || a.name.localeCompare(b.name));
   const avg = (v) => v.toFixed(1);
-  return `<h1>Stats</h1>${picker}<div class="card"><div class="tablewrap"><table class="stats">
+  const cards = canSee('player_cards');
+  return `<div class="rowhead"><h1>Stats</h1>${canSee('awards') ? '<a class="btn ghost small" href="#/awards">🏆 Awards</a>' : ''}</div>${picker}<div class="card"><div class="tablewrap"><table class="stats">
     <thead><tr>${COLS.map(([k, l, full]) => `<th scope="col"><button data-act="sort" data-k="${k}" aria-pressed="${k === key}" title="${full}" aria-label="Sort by ${full}">${l}</button></th>`).join('')}</tr></thead>
     <tbody>${rows.map((r) => `<tr>
-      <td><div class="nm-cell">${disc(r)}<span>${esc(r.name)}</span></div></td>
+      <td>${cards ? `<a class="nm-cell" href="#/player/${r.player_id}">` : '<div class="nm-cell">'}${disc(r)}<span>${esc(r.name)}</span>${cards ? '</a>' : '</div>'}</td>
       <td>${r.games}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
       <td>${r.goals_for}</td><td>${r.goals_against}</td><td>${avg(r.gfpg)}</td><td>${avg(r.gapg)}</td>
       <td class="k">${r.personal_goals}</td><td>${avg(r.gpg)}</td><td class="k">${r.motm}</td></tr>`).join('')}</tbody>
   </table></div>
-  <p class="legend"><b>GF / GA</b> are goals your team scored and conceded in the games you played. <b>Goals</b> are the ones you scored yourself. Tap a heading to sort.</p></div>`;
+  <p class="legend"><b>GF / GA</b> are goals your team scored and conceded in the games you played. <b>Goals</b> are the ones you scored yourself. Tap a heading to sort${cards ? ', or a name for their player card' : ''}.</p></div>
+  ${seasonPicCard(y)}`;
+}
+
+/* ------------------------------------------------- player cards & awards (all worked out from saved games) */
+const SETTLE_GAMES = 5; // a card "settles" once a player has this many games in the season
+const fmtShort = (d) => dateObj(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+// One player's view of every finished game they played (newest first). year = null for all time.
+function playerGames(pid, year = null) {
+  return state.mp.filter((r) => r.player_id === pid).map((r) => {
+    const m = state.matches.find((x) => x.id === r.match_id);
+    if (!m || m.status !== 'completed' || (year && matchYear(m) !== year)) return null;
+    const f = r.team === 'A' ? m.score_a : m.score_b, a = r.team === 'A' ? m.score_b : m.score_a;
+    return { m, r, f, a, res: f > a ? 'W' : f < a ? 'L' : 'D', goals: r.goals_recorded ? r.goals : 0,
+      motm: state.motm.some((x) => x.match_id === m.id && x.player_id === pid && x.is_winner),
+      votes: state.motm.find((x) => x.match_id === m.id && x.player_id === pid)?.votes || 0 };
+  }).filter(Boolean).sort((x, y) => (y.m.played_on > x.m.played_on ? 1 : y.m.played_on < x.m.played_on ? -1 : 0));
+}
+function playerSummary(pid, year = null) {
+  const g = playerGames(pid, year);
+  const s = { pid, games: g.length, w: 0, d: 0, l: 0, goals: 0, gf: 0, ga: 0, motm: 0, votes: 0, unbeaten: 0, clean: 0 };
+  g.forEach((x) => { s[x.res.toLowerCase()]++; s.goals += x.goals; s.gf += x.f; s.ga += x.a; s.motm += x.motm ? 1 : 0; s.votes += x.votes; s.clean += x.a === 0 ? 1 : 0; });
+  for (const x of g) { if (x.res === 'L') break; s.unbeaten++; }
+  s.winPct = s.games ? Math.round((s.w / s.games) * 100) : 0;
+  s.gpg = s.games ? s.goals / s.games : 0;
+  s.gfpg = s.games ? s.gf / s.games : 0;
+  s.gapg = s.games ? s.ga / s.games : 0;
+  s.gd = s.gf - s.ga;
+  s.form = g.slice(0, 5).map((x) => x.res);
+  return s;
+}
+// Best teammate (highest win % together) and nemesis (opponent you do worst against); at least 3 games each.
+function partnerships(pid, year) {
+  const withP = {}, vsP = {};
+  playerGames(pid, year).forEach((x) => {
+    rosterOf(x.m.id).forEach((o) => {
+      if (o.player_id === pid) return;
+      const bag = o.team === x.r.team ? withP : vsP;
+      const t = bag[o.player_id] ||= { pid: o.player_id, n: 0, w: 0, l: 0 };
+      t.n++; if (x.res === 'W') t.w++; if (x.res === 'L') t.l++;
+    });
+  });
+  const ok = (t) => t.n >= 3;
+  const best = Object.values(withP).filter(ok).sort((a, b) => b.w / b.n - a.w / a.n || b.n - a.n)[0] || null;
+  const nemesis = Object.values(vsP).filter(ok).sort((a, b) => a.w / a.n - b.w / b.n || b.l - a.l)[0] || null;
+  return { best, nemesis };
+}
+// What an award can be worked out from. (The database keeps the same list.)
+const MEASURES = {
+  goals: { label: 'goals scored', value: (s) => s.goals, fmt: (v) => plural(v, 'goal') },
+  goals_per_game: { label: 'goals per game', rate: true, value: (s) => +s.gpg.toFixed(2), fmt: (v) => `${v.toFixed(1)} goals a game` },
+  motm: { label: 'man of the match awards', value: (s) => s.motm, fmt: (v) => plural(v, 'award') },
+  motm_votes: { label: 'man of the match votes', value: (s) => s.votes, fmt: (v) => plural(v, 'vote') },
+  votes_no_win: { label: 'man of the match votes without ever winning it', value: (s) => (s.motm === 0 ? s.votes : null), fmt: (v) => `${plural(v, 'vote')}, no wins` },
+  games: { label: 'games played', value: (s) => s.games, fmt: (v) => plural(v, 'game') },
+  wins: { label: 'wins', value: (s) => s.w, fmt: (v) => plural(v, 'win') },
+  draws: { label: 'draws', value: (s) => s.d, fmt: (v) => plural(v, 'draw') },
+  losses: { label: 'defeats', value: (s) => s.l, fmt: (v) => plural(v, 'defeat') },
+  win_pct: { label: 'win rate', rate: true, value: (s) => s.winPct, fmt: (v) => `${v}% wins` },
+  team_goals_per_game: { label: 'team goals scored per game', rate: true, value: (s) => +s.gfpg.toFixed(2), fmt: (v) => `${v.toFixed(1)} team goals a game` },
+  conceded_per_game: { label: 'team goals conceded per game', rate: true, value: (s) => +s.gapg.toFixed(2), fmt: (v) => `${v.toFixed(1)} conceded a game` },
+  goal_diff: { label: 'team goal difference', rate: true, value: (s) => s.gd, fmt: (v) => `${v > 0 ? '+' : ''}${v} goal difference` },
+  clean_sheets: { label: 'clean sheets (team let in none)', value: (s) => s.clean, fmt: (v) => plural(v, 'clean sheet') },
+  unbeaten: { label: 'current unbeaten run', words: ['Longest', 'Shortest'], value: (s) => s.unbeaten, fmt: (v) => `${v} unbeaten` },
+};
+// The standard awards (also used before the Release 2 SQL is run, and for "Back to the original").
+const STANDARD_AWARDS = [
+  { key: 'boot', name: 'Golden Boot', icon: '⚽', description: 'Most goals scored.', measure: 'goals', direction: 'most', min_games: 0, min_value: 1 },
+  { key: 'motm', name: 'Star Man', icon: '⭐', description: 'Most man of the match awards.', measure: 'motm', direction: 'most', min_games: 0, min_value: 1 },
+  { key: 'bridesmaid', name: 'Always the Bridesmaid', icon: '💐', description: 'Most man of the match votes without ever winning it.', measure: 'votes_no_win', direction: 'most', min_games: 5, min_value: 1 },
+  { key: 'ever', name: 'Ever-present', icon: '🗓️', description: 'Most games played.', measure: 'games', direction: 'most', min_games: 0, min_value: 1 },
+  { key: 'lucky', name: 'Lucky Charm', icon: '🍀', description: 'Best win rate.', measure: 'win_pct', direction: 'most', min_games: 5, min_value: 1 },
+  { key: 'sharp', name: 'Sharpshooter', icon: '🎯', description: 'Most goals per game.', measure: 'goals_per_game', direction: 'most', min_games: 5, min_value: 0.01 },
+  { key: 'wall', name: 'The Wall', icon: '🧱', description: 'Fewest goals conceded per game by your team.', measure: 'conceded_per_game', direction: 'fewest', min_games: 5, min_value: null },
+  { key: 'run', name: 'On Fire', icon: '🔥', description: 'Longest current unbeaten run (3 games or more).', measure: 'unbeaten', direction: 'most', min_games: 0, min_value: 3 },
+].map((a, i) => ({ ...a, id: null, builtin: true, enabled: true, sort: (i + 1) * 10 }));
+const awardList = () => state.awards || STANDARD_AWARDS;
+const awardRule = (a) => {
+  const M = MEASURES[a.measure];
+  const words = M?.words || (M?.rate ? ['Highest', 'Lowest'] : ['Most', 'Fewest']);
+  const what = M ? `${a.direction === 'fewest' ? words[1] : words[0]} ${M.label}` : 'Unknown';
+  return `${what} · ${a.min_games ? `needs ${plural(a.min_games, 'game')}` : 'any number of games'}`;
+};
+// Award winners for a season (ties share the award). If nobody has played the minimum games yet,
+// the leader so far is shown as provisional.
+function awardResults(year) {
+  const sums = state.players.map((p) => playerSummary(p.id, year)).filter((x) => x.games);
+  return awardList().filter((a) => a.enabled && MEASURES[a.measure]).map((a) => {
+    const M = MEASURES[a.measure];
+    const pick = (pool) => {
+      const vals = pool.map((x) => ({ x, v: M.value(x) })).filter((t) => t.v != null && (a.direction === 'fewest' || (a.min_value != null ? t.v >= a.min_value : t.v > 0)));
+      if (!vals.length) return null;
+      const best = a.direction === 'fewest' ? Math.min(...vals.map((t) => t.v)) : Math.max(...vals.map((t) => t.v));
+      return { holders: vals.filter((t) => t.v === best).map((t) => t.x.pid), value: best };
+    };
+    const won = pick(sums.filter((x) => x.games >= (a.min_games || 0)));
+    if (won) return { a, ...won, provisional: false };
+    const early = a.min_games ? pick(sums) : null;
+    return early ? { a, ...early, provisional: true } : { a, holders: [], value: null, provisional: false };
+  });
+}
+const resPill = (r) => `<span class="res res-${r}" aria-label="${{ W: 'Won', D: 'Drew', L: 'Lost' }[r]}">${r}</span>`;
+const ballsInline = (n) => (n <= 2 ? '⚽'.repeat(n) : `⚽×${n}`);
+const earlyNote = (n, who) => (n >= SETTLE_GAMES ? '' : `<p class="early-note"><span><b>Early form:</b> based on ${plural(n, 'game')}${who ? ` for ${esc(who)}` : ''} this season. Cards settle after ${SETTLE_GAMES} games.</span>
+  <span class="settle" aria-label="${n} of ${SETTLE_GAMES} games"><i style="--p:${Math.min(n, SETTLE_GAMES) / SETTLE_GAMES}" aria-hidden="true"></i>${n} of ${SETTLE_GAMES}</span></p>`);
+
+function viewPlayer(pid) {
+  const p = player(pid);
+  if (!p) return '<a class="back" href="#/stats">← Stats</a><div class="card empty"><h2>Player not found</h2></div>';
+  const y = ui.year;
+  const s = playerSummary(pid, y), all = playerSummary(pid, null);
+  const isMe = myPlayer()?.id === pid;
+  const held = canSee('awards') ? awardResults(y).filter((x) => x.holders.includes(pid)) : [];
+  const { best, nemesis } = partnerships(pid, y);
+  const games = playerGames(pid, y);
+  const tile = (v, l) => `<div class="tile"><b>${v}</b><span>${l}</span></div>`;
+  const pairLine = (x, label, good) => x
+    ? `<li>${disc(player(x.pid))}<div class="who">${esc(pname(x.pid))}<small>${label}: ${good ? `won ${x.w} of ${x.n} together` : `lost ${x.l} of ${x.n} against`}</small></div></li>`
+    : `<li><div class="who muted">${label}<small>Needs 3 games ${good ? 'together' : 'against the same player'}.</small></div></li>`;
+  return `<a class="back" href="#/stats">← Stats</a>${previewNote('player_cards')}
+  <div class="prof-head">${disc(p)}<div><h1>${esc(p.name)}</h1>
+    <p class="muted" style="margin:0">${isMe ? 'You' : p.profile_id ? 'Member' : 'Guest'} · ${plural(all.games, 'game')} all time</p></div></div>
+  ${held.length ? `<div class="award-chips">${held.map((x) => `<a class="award-chip" href="#/awards">${esc(x.a.icon)} ${esc(x.a.name)}${x.provisional ? ' (provisional)' : ''}</a>`).join('')}</div>` : ''}
+  ${yearPicker()}
+  ${s.games ? `${earlyNote(s.games)}<section class="card"><div class="tiles">
+      ${tile(s.games, 'Games')}${tile(`${s.w}-${s.d}-${s.l}`, 'W-D-L')}${tile(`${s.winPct}%`, 'Win rate')}
+      ${tile(s.goals, 'Goals')}${tile(s.motm, 'MOTM')}${tile(`${s.gpg.toFixed(1)}`, 'Goals a game')}</div>
+      <div class="form-row"><span class="muted small-text">Form</span>${s.form.map(resPill).join('')}<span class="muted small-text">latest first</span></div>
+      <p class="muted small-text" style="margin:10px 0 0">Team goals for/against: ${s.gf} / ${s.ga} (${s.gfpg.toFixed(1)} / ${s.gapg.toFixed(1)} a game). Man of the match votes received: ${s.votes}.</p></section>
+    <section class="card"><h2>Partnerships</h2><ul class="plist">${pairLine(best, 'Best teammate', true)}${pairLine(nemesis, 'Nemesis', false)}</ul></section>
+    <section class="card"><h2>Games in ${y}</h2><ul class="plist games-list">${games.map((x) => {
+      const st = matchStyle(x.m);
+      return `<li><a class="game-link" href="#/match/${x.m.id}">${resPill(x.res)}<div class="who">${esc(fmtShort(x.m.played_on))} · ${x.f}–${x.a}
+        <small>${esc(tName(st, x.r.team))} · ${x.m.format}-a-side</small></div>
+        <span class="gx">${x.goals ? ballsInline(x.goals) : ''}${x.motm ? '<span class="star" aria-label="Man of the match">★</span>' : ''}</span></a></li>`;
+    }).join('')}</ul></section>`
+    : `<div class="card empty"><h2>No games in ${y}</h2><p>${esc(p.name)} hasn't played a finished game this season.</p></div>`}`;
+}
+
+function holderList(ids) {
+  const cards = canSee('player_cards');
+  const shown = ids.slice(0, 4), more = ids.length - shown.length;
+  return `<ul class="holders">${shown.map((pid) => `<li>${cards ? `<a href="#/player/${pid}">` : '<span class="holder">'}${disc(player(pid))}<span>${esc(pname(pid))}</span>${cards ? '</a>' : '</span>'}</li>`).join('')}${more > 0 ? `<li><span class="holder more">+${more} more</span></li>` : ''}</ul>`;
+}
+function viewAwards() {
+  const y = ui.year;
+  const rows = awardResults(y);
+  return `<a class="back" href="#/stats">← Stats</a>${previewNote('awards')}
+  <h1>Awards</h1>${canSee('season_picture') || isAdmin() ? `<div class="btn-row award-actions">${canSee('season_picture') ? '<button class="btn ghost small" data-act="season-pic">📸 Season picture</button>' : ''}${isAdmin() ? '<a class="btn ghost small" href="#/awards/edit">Edit awards</a>' : ''}</div>` : ''}${yearPicker()}
+  <p class="muted small-text" style="margin:-6px 0 14px">Worked out from every finished game in ${y}. Ties share the award.${canSee('player_cards') ? ' Tap a name for their player card.' : ''}</p>
+  ${rows.length ? `<div class="awards">${rows.map(({ a, holders, value, provisional }) => `<section class="card award">
+    <div class="award-icon" aria-hidden="true">${esc(a.icon)}</div>
+    <div class="award-body"><h2>${esc(a.name)}${provisional ? '<span class="prov">Provisional</span>' : ''}</h2>
+      <p class="muted small-text">${esc(a.description)}${a.min_games ? ` Needs ${plural(a.min_games, 'game')}.` : ''}</p>
+      ${holders.length ? `${holderList(holders)}<p class="award-val">${esc(MEASURES[a.measure].fmt(value))}</p>
+        ${provisional ? `<p class="muted small-text" style="margin-top:4px">Nobody has ${plural(a.min_games, 'game')} yet, so this is the leader so far.</p>` : ''}`
+      : '<p class="award-none">Not won yet this season.</p>'}</div></section>`).join('')}</div>`
+    : `<div class="card empty"><h2>No awards switched on</h2><p>${isAdmin() ? 'Switch some on in <a href="#/awards/edit">Edit awards</a>.' : 'An admin can switch awards on.'}</p></div>`}`;
+}
+
+/* ------------------------------------------------- editing awards (admins) */
+const AWARD_ICONS = ['🏆', '🥇', '⚽', '⭐', '👑', '🔥', '🎯', '🧱', '🧤', '🍀', '💐', '🗓️', '🚀', '💪', '🐐', '🥄', '🐢', '⚡'];
+function awardForm(a) {
+  const d = a || { name: '', icon: '🏆', description: '', measure: 'goals', direction: 'most', min_games: 0 };
+  return `<form data-form="award" data-id="${a?.id || ''}" class="award-form">
+    <h3>${a ? `Edit ${esc(a.name)}` : 'Your own award'}</h3>
+    <span class="lbl">Icon</span>
+    <div class="ico-pick" role="group" aria-label="Pick an icon">${AWARD_ICONS.map((e) => `<button type="button" data-act="award-ico" data-e="${e}" aria-pressed="${e === d.icon}" aria-label="Use ${e}">${e}</button>`).join('')}</div>
+    <label class="field"><span>Or type your own (any emoji)</span><input type="text" id="aw-icon" maxlength="8" value="${esc(d.icon)}" autocomplete="off"></label>
+    <label class="field"><span>Name</span><input type="text" id="aw-name" maxlength="40" value="${esc(d.name)}" placeholder="e.g. Wooden Spoon" autocomplete="off" required></label>
+    <label class="field"><span>What it's for (optional)</span><input type="text" id="aw-desc" maxlength="140" value="${esc(d.description)}" placeholder="e.g. Most defeats this season." autocomplete="off"></label>
+    <label class="field"><span>Worked out from</span><select id="aw-measure">${Object.entries(MEASURES).map(([k, M]) => `<option value="${k}" ${k === d.measure ? 'selected' : ''}>${esc(M.label[0].toUpperCase() + M.label.slice(1))}</option>`).join('')}</select></label>
+    <label class="field"><span>Who wins</span><select id="aw-dir"><option value="most" ${d.direction !== 'fewest' ? 'selected' : ''}>Most / highest</option><option value="fewest" ${d.direction === 'fewest' ? 'selected' : ''}>Fewest / lowest</option></select></label>
+    <label class="field"><span>Games needed to qualify</span><input type="number" class="num" id="aw-min" min="0" max="50" inputmode="numeric" value="${d.min_games || 0}"></label>
+    <p class="muted small-text" style="margin:-6px 0 12px">Until someone has played that many, the leader so far shows as provisional.</p>
+    <div class="btn-row" style="margin:0"><button class="btn" type="submit">Save award</button><button type="button" class="btn ghost" data-act="award-cancel">Cancel</button>
+      ${a?.builtin ? `<button type="button" class="btn ghost" data-act="award-restore" data-id="${a.id}">Back to the original</button>` : ''}
+      ${a && !a.builtin ? `<button type="button" class="btn danger" data-act="award-delete" data-id="${a.id}">Delete</button>` : ''}</div>
+  </form>`;
+}
+function viewAwardsEdit() {
+  const list = awardList();
+  const locked = state.awardsMissing;
+  return `<a class="back" href="#/awards">← Awards</a><h1>Edit awards</h1>
+  <p class="muted small-text" style="margin:-4px 0 14px">These awards are for the games you draw here. Winners are worked out from saved games, so any change shows straight away, past seasons included.</p>
+  ${locked ? '<p class="small-text warn-note">Editing awards needs a quick database update: run <b>supabase/migration_release_2.sql</b> in the Supabase SQL editor. Until then the standard awards are used.</p>' : ''}
+  <section class="card"><ul class="plist award-list">${list.map((a) => `<li class="wrap"><span class="award-ico" aria-hidden="true">${esc(a.icon)}</span>
+      <div class="who">${esc(a.name)}${a.enabled ? '' : ' <span class="badge">Off</span>'}<small>${esc(awardRule(a))}</small></div>
+      ${locked ? '' : `<div class="acts"><button class="btn ghost small" data-act="award-edit" data-id="${a.id}">Edit</button>
+        <button class="btn ghost small" data-act="award-toggle" data-id="${a.id}" data-v="${a.enabled ? 0 : 1}">${a.enabled ? 'Switch off' : 'Switch on'}</button></div>`}
+      ${!locked && ui.awardEdit === a.id ? awardForm(a) : ''}</li>`).join('')}</ul>
+    ${locked ? '' : ui.awardEdit === 'new' ? awardForm(null) : '<button class="btn block" data-act="award-new" style="margin-top:12px">Add your own award</button>'}
+  </section>`;
+}
+
+/* ------------------------------------------------- season picture (award winners, for WhatsApp) */
+function seasonPicCard(y) {
+  if (!canSee('season_picture')) return '';
+  return `<section class="card">${previewNote('season_picture')}<h2>📸 Season picture</h2>
+    <p class="muted small-text">A picture of ${y}'s award winners, games and goals so far, ready for the group chat.</p>
+    <div class="btn-row"><button class="btn wa" data-act="season-pic">Share picture</button><button class="btn ghost" data-act="season-pic-save">Save picture</button></div></section>`;
+}
+function seasonFacts(y) {
+  const games = state.matches.filter((m) => m.status === 'completed' && matchYear(m) === y);
+  const ids = new Set(games.map((m) => m.id));
+  return {
+    games: games.length,
+    goals: games.reduce((t, m) => t + (m.score_a || 0) + (m.score_b || 0), 0),
+    players: new Set(state.mp.filter((r) => ids.has(r.match_id)).map((r) => r.player_id)).size,
+    rows: awardResults(y).filter((r) => r.holders.length),
+  };
+}
+async function buildSeasonImage(y) {
+  const f = seasonFacts(y);
+  try { await document.fonts?.load('700 40px "Barlow Condensed"'); await document.fonts?.load('600 30px Barlow'); } catch { /* system fonts */ }
+  const W = 1080, rowH = 150, top0 = 340;
+  const H = top0 + Math.max(f.rows.length, 1) * rowH + 70;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  const D = '"Barlow Condensed", "Arial Narrow", sans-serif', B = 'Barlow, system-ui, sans-serif';
+  const fit = (t, max) => { if (x.measureText(t).width <= max) return t; while (t.length > 1 && x.measureText(t + '…').width > max) t = t.slice(0, -1); return t + '…'; };
+  const box = (X, Y, w, h, r) => { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r); x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath(); };
+  x.fillStyle = '#edf1f4'; x.fillRect(0, 0, W, H);
+  for (let i = 0; i * 90 < W; i++) { x.fillStyle = i % 2 ? '#388a5a' : '#2f7d4e'; x.fillRect(i * 90, 0, 90, 294); } // pitch stripes
+  x.fillStyle = '#245f3b'; x.fillRect(0, 288, W, 6);
+  x.textAlign = 'center'; x.fillStyle = '#fff';
+  x.font = `700 84px ${D}`; x.fillText(fit(APP_NAME.toUpperCase(), W - 80), W / 2, 110);
+  x.fillStyle = '#ffd34d'; x.font = `700 60px ${D}`; x.fillText(`${y} SEASON AWARDS`, W / 2, 185);
+  x.fillStyle = '#fff'; x.font = `600 34px ${B}`;
+  x.fillText(`${plural(f.games, 'game')} · ${plural(f.goals, 'goal')} · ${plural(f.players, 'player')}`, W / 2, 252);
+  if (!f.rows.length) {
+    x.fillStyle = '#5b6778'; x.font = `600 36px ${B}`; x.fillText('No awards won yet. Check back after a few more games!', W / 2, top0 + 70);
+  }
+  f.rows.forEach((r, i) => {
+    const t = top0 + i * rowH, h = rowH - 20;
+    x.fillStyle = '#ffffff'; box(40, t, W - 80, h, 22); x.fill();
+    x.strokeStyle = '#d6dde5'; x.lineWidth = 2; x.stroke();
+    x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#14213d'; x.font = `60px ${B}`; x.fillText(r.a.icon, 120, t + h / 2 + 4);
+    x.textBaseline = 'alphabetic'; x.textAlign = 'left';
+    x.fillStyle = '#2f7d4e'; x.font = `700 38px ${D}`; x.fillText(fit(r.a.name.toUpperCase() + (r.provisional ? ' (PROVISIONAL)' : ''), W - 260), 190, t + 52);
+    const val = MEASURES[r.a.measure].fmt(r.value);
+    x.font = `600 30px ${B}`; const vw = x.measureText(val).width;
+    x.textAlign = 'right'; x.fillStyle = '#5b6778'; x.fillText(val, W - 70, t + 102);
+    x.textAlign = 'left'; x.fillStyle = '#14213d'; x.font = `600 40px ${B}`;
+    x.fillText(fit(r.holders.map(pname).join(' & '), W - 70 - vw - 30 - 190), 190, t + 102);
+  });
+  x.textAlign = 'center'; x.fillStyle = '#5b6778'; x.font = `500 26px ${B}`;
+  x.fillText(`Worked out from every finished game in ${y}`, W / 2, H - 30);
+  return new Promise((ok) => c.toBlob(ok, 'image/png'));
+}
+function seasonCaption(y) {
+  const f = seasonFacts(y);
+  let t = `🏆 *${APP_NAME}* – ${y} season awards\n${plural(f.games, 'game')} · ${plural(f.goals, 'goal')}`;
+  f.rows.forEach((r) => { t += `\n${r.a.icon} ${r.a.name}: ${r.holders.map(pname).join(' & ')}${r.provisional ? ' (provisional)' : ''}`; });
+  return t;
 }
 
 /* ---------------------------------------------------------------- view: me */
@@ -1082,6 +1444,7 @@ function viewMe() {
     <button class="btn block" type="submit">Save name</button>
     <p class="muted small-text" style="margin:10px 0 0">Shown on the pitch and in the stats. Changing it updates your past games too.</p>
   </form></section>
+  ${canSee('player_cards') && myPlayer() ? `<section class="card"><h2>Your player card</h2><p class="muted small-text">Form, win rate, goals, best teammate and nemesis${canSee('awards') ? ', plus any awards you hold' : ''}.</p><a class="btn block" href="#/player/${myPlayer().id}">See your player card</a></section>` : ''}
   ${homeHowTo()}
   <section class="card"><p style="margin:0 0 12px">Signed in as <b>${esc(p.email || '@' + p.github_username)}</b></p>
     <button class="btn ghost block" data-act="signout">Sign out</button></section>`;
@@ -1133,6 +1496,8 @@ function viewAdmin() {
   const guests = state.players.filter((p) => !p.profile_id).length;
   const playerMeta = `${state.players.filter((p) => p.active).length} active, ${plural(guests, 'guest')}`;
   const homeCount = members.filter((p) => state.home?.[p.id]).length;
+  const seenWeek = members.filter((p) => state.seen?.[p.id] && Date.now() - new Date(state.seen[p.id].last_at) < 7 * 864e5).length;
+  const seenSummary = state.seenMissing ? '' : state.seen ? `<p class="muted small-text"><b>${seenWeek} of ${members.length}</b> have been on the app in the last 7 days. Visits are recorded from Release 2 onwards.</p>` : '';
   const notYet = members.filter((p) => !state.home?.[p.id]);
   const homeSummary = state.homeMissing
     ? '<p class="small-text warn-note">To see who has the app on their home screen, run <b>supabase/migration_home_screen.sql</b> in the Supabase SQL editor.</p>'
@@ -1152,9 +1517,10 @@ function viewAdmin() {
     ${ui.invite && !ui.invite.isGuest ? invitePanel() : ''}
   </section>
   ${fold('members', 'Members', esc(state.homeMissing ? plural(members.length, 'member') : `${homeCount} of ${members.length} on home screen`), `    ${homeSummary}
+    ${seenSummary}
     <p class="muted small-text">Organisers can draw teams and add guests. Any organiser can enter a game's final score. On games they drew, they can also correct the score, fill in goals, run the vote and delete the game until the score is in. Admins can do all of that on every game, and manage members.</p>
     <ul class="plist">
-    ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small>${state.homeMissing ? '' : homeTag(p)}</div>
+    ${members.map((p) => `<li class="wrap">${disc({ name: pName(p), avatar_url: p.avatar_url })}<div class="who">${esc(pName(p))}<small>${esc(handle(p))}${p.is_admin ? ' · admin' : p.can_organise ? ' · can draw teams' : ''}${p.id === me ? ' · you' : ''}</small>${state.homeMissing ? '' : homeTag(p)}${state.seen ? seenTag(p) : ''}</div>
       ${p.id === me ? '' : `<div class="acts">
         ${p.is_admin ? '' : `<button class="btn ghost small" data-act="toggle-organiser" data-id="${p.id}" data-v="${p.can_organise ? 0 : 1}">${p.can_organise ? 'Stop drawing teams' : 'Let them draw teams'}</button>`}
         <button class="btn ghost small" data-act="toggle-admin" data-id="${p.id}" data-v="${p.is_admin ? 0 : 1}">${p.is_admin ? 'Remove admin' : 'Make admin'}</button>
@@ -1169,6 +1535,11 @@ function viewAdmin() {
     <button class="btn block" data-act="add-guest">Add player</button>
     <p class="muted small-text" style="margin:8px 0 0">Guests can be picked for teams and you can enter their goals, but they can't vote.</p></div>
 `, !!(ui.merge || ui.invite?.isGuest))}
+  ${fold('features', 'Features', esc(state.featuresMissing ? 'Needs a database update' : `${FEATURES.filter(([k]) => featureLive(k)).length} of ${FEATURES.length} live`), `    <p class="muted small-text">Choose when new features go live. While a feature is off, only admins can see it, so you can try it first.</p>
+    ${state.featuresMissing ? '<p class="small-text warn-note">Feature switches need a quick database update: run <b>supabase/migration_release_2.sql</b> in the Supabase SQL editor. Until then these stay admin-only.</p>' : ''}
+    <ul class="plist">${FEATURES.map(([k, name, desc]) => `<li class="wrap feature-row"><div class="who">${name} <span class="badge ${featureLive(k) ? 'win' : ''}">${featureLive(k) ? 'Live' : 'Admins only'}</span><small>${esc(desc)}</small></div>
+      <div class="acts"><button class="btn ${featureLive(k) ? 'ghost' : ''} small" data-act="feature" data-k="${k}" data-v="${featureLive(k) ? 0 : 1}" ${state.featuresMissing ? 'disabled' : ''}>${featureLive(k) ? 'Hide from players' : 'Set live'}</button>
+      ${k === 'awards' ? '<a class="btn ghost small" href="#/awards/edit">Edit awards</a>' : ''}</div></li>`).join('')}</ul>`)}
   ${fold('rules', 'Draw rules', esc(rulesVis() === 'organisers' ? 'Organisers and admins' : RULES_VIS[rulesVis()][0]), `    <p class="muted small-text">Who can see a game's draw rules (like "Ben and Tom play apart") on the game page once the teams are saved. Organisers always see them while drawing.</p>
     ${state.settingsMissing ? '<p class="small-text warn-note">This setting needs a quick database update: run <b>supabase/migration_rules_visibility.sql</b> in the Supabase SQL editor. Until then everyone can see them, as before.</p>' : ''}
     <div class="seg three" role="group" aria-label="Who can see draw rules">${Object.entries(RULES_VIS).map(([k, [l, sub]]) => `<button class="${rulesVis() === k ? 'on' : ''}" data-act="rules-vis" data-v="${k}" aria-pressed="${rulesVis() === k}" ${state.settingsMissing ? 'disabled' : ''}>${l}<small>${sub}</small></button>`).join('')}</div>
@@ -1233,10 +1604,23 @@ const actions = {
   draw() {
     const d = ui.draft;
     try {
-      d.teams = drawTeams([...d.selected], d.format, d.rules, pname);
+      if (drawMode() === 'balanced') {
+        const r = drawBalanced([...d.selected], d.format, d.rules, groupStrengths(), pname);
+        d.teams = { A: r.A, B: r.B };
+        d.balance = r.chanceA; // Team 1's chance of winning, shown as one line under the pitch
+      } else {
+        d.teams = drawTeams([...d.selected], d.format, d.rules, pname);
+        d.balance = null;
+      }
     } catch (e) { return toast(errMsg(e), true); }
     d.animate = true;
     route(true).then(() => document.getElementById('drawn')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  },
+  'draw-mode'(el) {
+    if (el.dataset.v === 'balanced' && !canBalance()) return;
+    ui.drawMode = el.dataset.v;
+    ui.draft.teams = null; ui.draft.balance = null;
+    route(true);
   },
   'rule-type'(el) { ui.draft.ruleType = el.dataset.v; ui.draft.rulePick = new Set(); route(true); },
   'add-rule'() {
@@ -1371,6 +1755,94 @@ const actions = {
     toast('Copied. Paste it into your chat');
   },
   year(el) { ui.year = +el.dataset.y; route(true); },
+  'open-fold'(el) { ui.fold.add(el.dataset.k); },
+  async feature(el) {
+    const k = el.dataset.k, on = el.dataset.v === '1';
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_feature', { p_key: k, p_on: on });
+      if (error) throw error;
+      toast(`${FEATURES.find((f) => f[0] === k)[1].replace(/^\S+\s/, '')} ${on ? 'is now live for everyone' : 'is hidden from players'}`);
+      await refresh();
+    });
+  },
+  async 'season-pic'(el) {
+    const y = ui.year;
+    await busy(el, async () => {
+      const blob = await buildSeasonImage(y);
+      const file = new File([blob], `${APP_NAME.replace(/\s+/g, '-')}-${y}-awards.png`, { type: 'image/png' });
+      if (navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], text: seasonCaption(y) }); }
+        catch (e) { if (e?.name !== 'AbortError') throw e; }
+      } else {
+        downloadBlob(blob, file.name);
+        toast('Picture saved. Attach it in WhatsApp');
+      }
+    });
+  },
+  async 'season-pic-save'(el) {
+    const y = ui.year;
+    await busy(el, async () => {
+      downloadBlob(await buildSeasonImage(y), `${APP_NAME.replace(/\s+/g, '-')}-${y}-awards.png`);
+      toast('Picture saved');
+    });
+  },
+  async 'copy-chase'(el) {
+    const m = state.matches.find((x) => x.id === el.dataset.m);
+    if (!m) return;
+    const goals = rosterOf(m.id).filter((r) => !r.goals_recorded && player(r.player_id)?.profile_id).map((r) => firstName(pname(r.player_id)));
+    let votes = [];
+    if (!m.motm_closed) {
+      const { data } = await sb.rpc('motm_waiting', { p_match: m.id });
+      votes = (data || []).map((r) => firstName(pname(r.player_id)));
+    }
+    let text = `⚽ *${APP_NAME}* – ${dateObj(m.played_on).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })}\nStill to do:`;
+    if (goals.length) text += `\n• Add your goals: ${goals.join(', ')}`;
+    if (votes.length) text += `\n• Vote for man of the match: ${votes.join(', ')}`;
+    text += `\n${lineupUrl(m)}`;
+    try { await navigator.clipboard.writeText(text); ui.chaseText = null; toast('Reminder copied: paste it into WhatsApp'); }
+    catch { ui.chaseText = { m: m.id, text }; route(true); } // copying blocked: show the text to copy by hand
+  },
+  'award-edit'(el) { ui.awardEdit = el.dataset.id; route(true); },
+  'award-new'() { ui.awardEdit = 'new'; route(true); },
+  'award-cancel'() { ui.awardEdit = null; route(true); },
+  'award-ico'(el) {
+    const i = document.getElementById('aw-icon');
+    if (i) i.value = el.dataset.e;
+    el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+  },
+  async 'award-toggle'(el) {
+    const on = el.dataset.v === '1';
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_award_enabled', { p_id: el.dataset.id, p_on: on });
+      if (error) throw error;
+      toast(on ? 'Award switched on' : 'Award switched off');
+      await refresh();
+    });
+  },
+  async 'award-delete'(el) {
+    const a = awardList().find((x) => x.id === el.dataset.id);
+    if (!a || !confirm(`Delete ${a.name}? This can't be undone.`)) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('delete_award', { p_id: a.id });
+      if (error) throw error;
+      ui.awardEdit = null;
+      toast('Award deleted');
+      await refresh();
+    });
+  },
+  async 'award-restore'(el) {
+    const a = awardList().find((x) => x.id === el.dataset.id);
+    const o = a && STANDARD_AWARDS.find((x) => x.key === a.key);
+    if (!o) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('save_award', { p_id: a.id, p_name: o.name, p_icon: o.icon, p_description: o.description, p_measure: o.measure,
+        p_direction: o.direction, p_min_games: o.min_games, p_min_value: o.min_value, p_enabled: a.enabled });
+      if (error) throw error;
+      ui.awardEdit = null;
+      toast(`${o.name} is back to the original`);
+      await refresh();
+    });
+  },
   async 'rules-vis'(el) {
     await busy(el, async () => {
       const { error } = await sb.rpc('set_setting', { p_key: 'draw_rules_visible', p_value: el.dataset.v });
@@ -1586,6 +2058,22 @@ async function adminUpdate(el, table, patch, okMsg) {
 }
 
 const forms = {
+  async award(f) {
+    const id = f.dataset.id || null;
+    const a = id ? awardList().find((x) => x.id === id) : null;
+    const v = (k) => f.querySelector(k).value.trim();
+    const name = v('#aw-name'), icon = v('#aw-icon') || '🏆';
+    if (!name) return toast('Give the award a name', true);
+    const min = Math.max(0, Math.min(50, parseInt(v('#aw-min'), 10) || 0));
+    await busy(f.querySelector('button[type=submit]'), async () => {
+      const { error } = await sb.rpc('save_award', { p_id: id, p_name: name, p_icon: icon, p_description: v('#aw-desc'), p_measure: v('#aw-measure'),
+        p_direction: v('#aw-dir'), p_min_games: min, p_min_value: a ? a.min_value : null, p_enabled: a ? a.enabled : true });
+      if (error) throw error;
+      ui.awardEdit = null;
+      toast(id ? 'Award saved' : `${name} added`);
+      await refresh();
+    });
+  },
   async 'send-link'(f) {
     const email = f.querySelector('input[type=email]').value.trim();
     if (!email) return;

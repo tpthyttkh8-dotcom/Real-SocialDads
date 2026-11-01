@@ -3,7 +3,7 @@
 A small web app for a weekly 5, 6, 7 or (rarely) 8-a-side game among friends.
 
 - **Sign in with just an email address.** No password, and no GitHub account needed. Friends get a link (or a 6-digit code) by email
-- **Random team draw** shown on a pitch, with players dropping into place
+- **Balanced or random team draw** shown on a pitch, with players dropping into place. Balanced evens the teams out using past results
 - **Draw rules:** keep chosen players on the *same* team (e.g. a guest with whoever invited them) or on *opposite* teams
 - **Regulars can run the draw:** the admin can give any member the "organiser" role
 - **Every line-up is saved** and can be reviewed any time
@@ -97,7 +97,19 @@ Once you've picked the players, a **Draw rules** card appears:
 - **Play together:** pick 2 or more players who must end up on the same team (a guest and the friend who invited them, say).
 - **Play apart:** pick exactly 2 players who must end up on opposite teams.
 
-You can add as many rules as you like. The app tells you straight away if rules clash (for example "together" and "apart" for the same pair) or can't fit the team sizes. Within the rules the draw is still fully random, and a group set to play together is just as likely to land on Blue as on Orange. If you untick a player, any rules involving them are removed.
+You can add as many rules as you like. The app tells you straight away if rules clash (for example "together" and "apart" for the same pair) or can't fit the team sizes. Within the rules a random draw is still fully random (and a balanced one picks at random among the fairest splits), and a group set to play together is just as likely to land on Blue as on Orange. If you untick a player, any rules involving them are removed.
+
+### Balanced or random
+
+On **New game**, the **How to pick teams** card has two choices:
+- **Balanced** (fair on past results): the app looks at every finished game (who played on which team, and the final score) and works out who tends to help their team win, allowing for who they played with. Someone who keeps winning with different team-mates rises; someone who only wins alongside the same strong player doesn't get that player's credit. It then picks at random from the fairest ways to split the players, so **Shuffle again** still gives different teams, and every draw rule is kept.
+- **Random** (pure luck): anyone can end up with anyone, as before.
+
+After a balanced draw, one line under the pitch shows each team's chance of winning, like **Balance 52% / 48%**. Nobody's own score is shown anywhere, and nothing about it is saved: it's worked out on the organiser's phone each time from the games already in the app.
+
+Balanced is picked automatically once there are 4 games with a final score. Before that the draw is random, and the card says why. New players and guests count as average until they've played. Players need several games before they stand out, older games count for less (a game 6 months ago counts half as much), and one big win counts as 6 goals at most. Individual goals and man of the match votes aren't used, so defenders and keepers count as much as scorers. It gets better the more games you play, but single games are noisy, so expect "fairer", not "perfect".
+
+The choice stays while the app is open; tap the other button at any time (it clears the drawn teams). It works straight away for organisers and needs no database change.
 
 ### The pitch and formations
 
@@ -120,7 +132,7 @@ They are purely cosmetic: stats only ever count which side a player was on, neve
 
 ### Not happy with the draw?
 
-After you tap **Draw teams**, the button changes to **Shuffle again**, sitting next to **Save game** under the pitch. Shuffle as many times as you like. Nothing is recorded until you tap **Save game**, and your draw rules stay in place for every reshuffle.
+After you tap **Draw teams**, the button changes to **Shuffle again**, sitting next to **Save game** under the pitch. Shuffle as many times as you like. Nothing is recorded until you tap **Save game**, and your draw rules stay in place for every reshuffle. With **Balanced**, every shuffle is another fair split.
 
 ### Who can do what
 
@@ -220,7 +232,7 @@ When an update comes with a `migration_….sql` file, run it once in Supabase (S
 ```
 index.html          page shell
 app.js              the app screens and logic
-draw.js             the random draw and its rules (kept separate so it can be tested)
+draw.js             the team draw (random or balanced) and its rules (kept separate so it can be tested)
 styles.css          styling
 config.js           your Supabase URL + key (edit this)
 manifest.json       lets phones install it like an app
@@ -230,6 +242,7 @@ supabase/migration_seasons_merge.sql  one-off update if you installed an earlier
 supabase/migration_lineup_order.sql   one-off update: keeps saved line-ups in the order they were drawn
 supabase/migration_team_names_colours.sql  one-off update: fun team names and colours
 supabase/migration_home_screen.sql    one-off update (Release 1.3): admins see who uses the app from the home screen
+supabase/migration_release_2.sql      one-off update (Release 2): feature switches and the editable award list
 ```
 
 ## Keep-alive (stop the free Supabase project pausing)
@@ -320,9 +333,23 @@ The site recognises iPhones/iPads and Android phones and shows the right steps: 
 
 To change the wording of the note under the iPhone steps, edit the `IPHONE_NOTE` line in `app.js` (near the top of the home-screen section). It always shows under the list, whatever it says.
 
+## Player cards, awards and the season picture (Release 2)
+
+**Balanced teams** (added 31 Oct 2026): organisers choose Balanced or Random on New game (see *Balanced or random* above). It isn't one of the switches: organisers have it straight away and can always pick Random.
+
+Three features an admin switches on in **Admin → Features**. Until then only admins see them, with a "Preview" note.
+
+- **Player cards:** tap a name in Stats, on a finished game's pitch or on the Awards page. Your own is also on your profile. Players with fewer than 5 games in the season get an "Early form" note until their card settles.
+- **Awards:** worked out from every finished game in the season; ties share. If nobody has the minimum games yet, the leader so far shows as Provisional. Admins can rename awards, change icons and games needed, switch any off, put the standard ones back, and add their own from a list of measures (goals, wins, defeats, win rate, clean sheets and more). Award definitions are stored with a context of "casual" so the future league section can reuse them.
+- **Season picture:** the season's award winners as a picture for WhatsApp.
+- **Last on the app and Still to do:** admins see when each member last opened the app (Admin → Members). On a finished game, admins and the organiser who drew it see who hasn't added goals or voted yet, with a copyable WhatsApp reminder. Only who still has to vote is shown, never anyone's vote.
+
+Needs `supabase/migration_release_2.sql`.
+
 ## Release history
 
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
+- **Release 2 (29 Oct 2026; balanced teams added 31 Oct):** balanced or random team draw, player cards (with early-form note), editable awards page (provisional leaders), season picture, Admin → Features switches. Needs `migration_release_2.sql`.
 - **Release 1.3 (28 Oct 2026):** Admin → Members shows who has the app on their home screen (phone and last opened from the icon), with a count and a copyable WhatsApp reminder. Admin-only. Needs `migration_home_screen.sql`.
 - **Release 1.2 (26 Oct 2026):** add-to-home-screen how-to matched to the phone (iPhone / Android / already installed), one-tap Install app on Android Chrome. App files only.
 - **Release 1.1 (22 Oct 2026):** sign-in links survive work/university email scanners (tap **Finish signing in**). App files + new email templates. Plus `migration_view_security.sql`, which clears Supabase's "Security Definer View" warnings for `motm_results` and `player_stats`, and `migration_function_permissions.sql`, which stops signed-out visitors running any database function.
