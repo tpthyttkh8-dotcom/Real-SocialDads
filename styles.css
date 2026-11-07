@@ -472,3 +472,12 @@ a.nm-cell span { text-decoration: underline; text-decoration-color: var(--line);
 .balance-line { text-align: center; margin: 10px 0 4px; font-size: 15px; }
 .balance-line span { font: 700 13px var(--body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-right: 4px; }
 .balance-line small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+/* matches grouped by month (Release 2.1): each month is a box like Admin's folding sections, its games rows inside */
+details.month > summary:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+details.month .fold-meta > span, .m-todo { white-space: nowrap; }
+.m-todo { color: var(--ink); }
+details.month .fold-body { padding-top: 0; }
+details.month .card.match { background: none; border: 0; border-radius: 0; margin: 0; padding: 14px 0; }
+details.month .card.match + .card.match { border-top: 1px solid var(--line); }
+details.month .card.match:last-child { padding-bottom: 2px; }
+details.month .card.match:hover .fmt { text-decoration: underline; text-underline-offset: 3px; }

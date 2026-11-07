@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r2-20261031a'; // same version as index.html, so a phone never mixes old and new files
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r21-20261107a'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -42,6 +42,7 @@ const state = {
 const ui = {
   draft: { date: today(), format: 6, selected: new Set(), teams: null, animate: false, rules: { together: [], apart: [] }, ruleType: 'together', rulePick: new Set() },
   sort: { key: 'wins', dir: -1 },
+  months: new Map(), // Matches page: which months are open (YYYY-MM -> true/false), while the app is open
   year: new Date().getFullYear(),
   merge: null,
   style: { draft: freshStyle() },
@@ -296,6 +297,7 @@ const FEATURES = [
   ['player_cards', '🃏 Player cards', 'Tap a name in Stats, on a saved game\'s pitch or on the Awards page to see form, win rate, best teammate and nemesis.'],
   ['awards', '🏆 Awards page', 'Golden Boot, Star Man, Always the Bridesmaid and more, plus any awards you add. From the Stats page.'],
   ['season_picture', '📸 Season picture', 'A picture of the season\'s award winners to share in WhatsApp, from the Stats and Awards pages.'],
+  ['balanced_teams', '⚖️ Balanced teams', 'Organisers choose Balanced or Random on New game. Balanced evens the teams out using past results (needs 4 games with a final score). While this is off, the draw is random, as before.'],
 ];
 const featureLive = (k) => !!state.features?.[k];
 // Admins can always see a feature (to try it out); everyone else only once it's live.
@@ -529,7 +531,46 @@ function viewMatches() {
       <p>${isOrganiser() && ui.year === curYear() ? 'A fresh season. Draw the first teams of the year.' : 'Nothing was played this year.'}</p>
       ${isOrganiser() && ui.year === curYear() ? '<a class="btn" href="#/new">Draw teams</a>' : ''}</div>`;
   }
-  return `<h1>Matches</h1>${homeCard()}${picker}${list.map(matchCard).join('')}`;
+  return `<h1>Matches</h1>${homeCard()}${picker}${monthGroups(list)}`;
+}
+
+/* ------------------------------------------------------------- matches by month */
+// The season's games under a heading per month, newest first. The newest month is open, and so is any month
+// with something for you to do (score, goals or a vote); older months fold away. Tap a month to open or close it;
+// that's remembered while the app is open.
+const monthKey = (m) => String(m.played_on).slice(0, 7); // 'YYYY-MM'
+function needsMe(m) {
+  const done = m.status === 'completed';
+  if (!done) return isOrganiser();
+  const mine = myPlayer() && rosterOf(m.id).find((r) => r.player_id === myPlayer().id);
+  return !!mine && (!mine.goals_recorded || (!m.motm_closed && !state.ballots.has(m.id)));
+}
+function monthRecord(games) {
+  const me = myPlayer()?.id;
+  if (!me) return '';
+  let w = 0, d = 0, l = 0;
+  for (const m of games) {
+    if (m.status !== 'completed') continue;
+    const r = rosterOf(m.id).find((x) => x.player_id === me);
+    if (!r) continue;
+    if (m.score_a === m.score_b) d++;
+    else if ((m.score_a > m.score_b) === (r.team === 'A')) w++;
+    else l++;
+  }
+  return w + d + l ? `you ${w}W ${d}D ${l}L` : '';
+}
+function monthGroups(list) {
+  const groups = new Map();
+  for (const m of list) { const k = monthKey(m); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+  return [...groups].map(([key, games], i) => {
+    const name = dateObj(games[0].played_on).toLocaleDateString('en-GB', { month: 'long' });
+    const todo = games.some(needsMe);
+    const open = ui.months.has(key) ? ui.months.get(key) : i === 0 || todo;
+    const rec = monthRecord(games);
+    return `<details class="card fold month" data-month="${key}"${open ? ' open' : ''}>
+      <summary><h2>${name}</h2><span class="fold-meta"><span>${plural(games.length, 'game')}</span>${rec ? ` · <span>${rec}</span>` : ''}${todo ? ' · <b class="m-todo">to do</b>' : ''}</span><i class="chev" aria-hidden="true"></i></summary>
+      <div class="fold-body m-games">${games.map(matchCard).join('')}</div></details>`;
+  }).join('');
 }
 
 function matchCard(m) {
@@ -1073,14 +1114,17 @@ function groupStrengths() {
   for (const r of state.mp) by.get(r.match_id)?.[r.team]?.push(r.player_id);
   return playerStrengths([...by.values()], today());
 }
-const canBalance = () => scoredGames().length >= BAL_MIN_GAMES;
-const drawMode = () => (canBalance() ? (ui.drawMode || 'balanced') : 'random');
+// Admin → Features switch (balanced_teams). While it's off the draw is random, as before, and only admins see the
+// card (to try it, with Random picked). Once it's on, organisers see it and Balanced is picked unless they tap Random.
+const canBalance = () => canSee('balanced_teams') && scoredGames().length >= BAL_MIN_GAMES;
+const drawMode = () => (canBalance() ? (ui.drawMode || (featureLive('balanced_teams') ? 'balanced' : 'random')) : 'random');
 function drawModeCard() {
+  if (!canSee('balanced_teams')) return '';
   const mode = drawMode(), ok = canBalance(), n = scoredGames().length;
   const note = !ok ? `Balanced teams need ${plural(BAL_MIN_GAMES, 'game')} with a final score, and there ${n === 1 ? 'is' : 'are'} ${n} so far. Until then the draw is random.`
     : mode === 'balanced' ? "Teams are evened out using past results, allowing for who people played with. New players and guests count as average. Nobody's own score is shown."
     : 'Pure luck: anyone can end up with anyone.';
-  return `<section class="card"><h2>How to pick teams</h2>
+  return `<section class="card">${previewNote('balanced_teams')}<h2>How to pick teams</h2>
     <div class="seg two" style="margin:4px 0 10px" role="group" aria-label="How to pick teams">
       <button class="${mode === 'balanced' ? 'on' : ''}" data-act="draw-mode" data-v="balanced" aria-pressed="${mode === 'balanced'}" ${ok ? '' : 'disabled'}>Balanced<small>fair on past results</small></button>
       <button class="${mode === 'random' ? 'on' : ''}" data-act="draw-mode" data-v="random" aria-pressed="${mode === 'random'}">Random<small>pure luck</small></button>
@@ -2128,6 +2172,7 @@ document.addEventListener('submit', (e) => {
 // remember which Admin sections are open (the toggle event doesn't bubble, so listen in the capture phase)
 document.addEventListener('toggle', (e) => {
   const d = e.target;
+  if (d.matches?.('details[data-month]')) { ui.months.set(d.dataset.month, d.open); return; }
   if (!d.matches?.('details[data-fold]')) return;
   d.open ? ui.fold.add(d.dataset.fold) : ui.fold.delete(d.dataset.fold);
 }, true);

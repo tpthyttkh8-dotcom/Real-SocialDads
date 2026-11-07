@@ -107,9 +107,9 @@ On **New game**, the **How to pick teams** card has two choices:
 
 After a balanced draw, one line under the pitch shows each team's chance of winning, like **Balance 52% / 48%**. Nobody's own score is shown anywhere, and nothing about it is saved: it's worked out on the organiser's phone each time from the games already in the app.
 
-Balanced is picked automatically once there are 4 games with a final score. Before that the draw is random, and the card says why. New players and guests count as average until they've played. Players need several games before they stand out, older games count for less (a game 6 months ago counts half as much), and one big win counts as 6 goals at most. Individual goals and man of the match votes aren't used, so defenders and keepers count as much as scorers. It gets better the more games you play, but single games are noisy, so expect "fairer", not "perfect".
+Balanced teams is **off until an admin switches it on** in **Admin → Features**. Until then the draw is random, as before: organisers don't see the card, and admins see it with a "Preview" note (Random picked) so they can try it. Once it's on, Balanced is picked for organisers unless they tap Random. It also needs at least 4 games with a final score; before that the draw stays random, and the card says why. New players and guests count as average until they've played. Players need several games before they stand out, older games count for less (a game 6 months ago counts half as much), and one big win counts as 6 goals at most. Individual goals and man of the match votes aren't used, so defenders and keepers count as much as scorers. It gets better the more games you play, but single games are noisy, so expect "fairer", not "perfect".
 
-The choice stays while the app is open; tap the other button at any time (it clears the drawn teams). It works straight away for organisers and needs no database change.
+The choice stays while the app is open; tap the other button at any time (it clears the drawn teams). The switch is stored with the other feature switches (`migration_release_2.sql`); the balancing itself needs no database change.
 
 ### The pitch and formations
 
@@ -148,6 +148,8 @@ Admins give the organiser role in **Admin → Members → Let them draw teams**.
 ---
 
 ## Seasons: a fresh start each year
+
+The **Matches** page groups the season's games by month, newest first. The newest month is open, and so is any month with something for you to do (a score to enter, goals to add or a vote); older months fold away under their heading, which shows how many games were played and your own wins, draws and losses. Tap a month to open or close it.
 
 Games and stats run for a **calendar year**. Every game belongs to the year of its date, so on 1 January the Matches and Stats pages start empty for the new season. The numbered year buttons at the top of both pages switch between seasons, and earlier years stay available as an archive (nothing is deleted).
 
@@ -335,9 +337,9 @@ To change the wording of the note under the iPhone steps, edit the `IPHONE_NOTE`
 
 ## Player cards, awards and the season picture (Release 2)
 
-**Balanced teams** (added 31 Oct 2026): organisers choose Balanced or Random on New game (see *Balanced or random* above). It isn't one of the switches: organisers have it straight away and can always pick Random.
+Four features an admin switches on in **Admin → Features**. Until then only admins see them, with a "Preview" note.
 
-Three features an admin switches on in **Admin → Features**. Until then only admins see them, with a "Preview" note.
+- **Balanced teams** (added 31 Oct 2026): organisers choose Balanced or Random on New game (see *Balanced or random* above). Until it's switched on, the draw is random, as before.
 
 - **Player cards:** tap a name in Stats, on a finished game's pitch or on the Awards page. Your own is also on your profile. Players with fewer than 5 games in the season get an "Early form" note until their card settles.
 - **Awards:** worked out from every finished game in the season; ties share. If nobody has the minimum games yet, the leader so far shows as Provisional. Admins can rename awards, change icons and games needed, switch any off, put the standard ones back, and add their own from a list of measures (goals, wins, defeats, win rate, clean sheets and more). Award definitions are stored with a context of "casual" so the future league section can reuse them.
@@ -348,6 +350,7 @@ Needs `supabase/migration_release_2.sql`.
 
 ## Release history
 
+- **Release 2.1 (7 Nov 2026):** the Matches list grouped by month, with older months folded away. App files only.
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
 - **Release 2 (29 Oct 2026; balanced teams added 31 Oct):** balanced or random team draw, player cards (with early-form note), editable awards page (provisional leaders), season picture, Admin → Features switches. Needs `migration_release_2.sql`.
 - **Release 1.3 (28 Oct 2026):** Admin → Members shows who has the app on their home screen (phone and last opened from the icon), with a count and a copyable WhatsApp reminder. Admin-only. Needs `migration_home_screen.sql`.
