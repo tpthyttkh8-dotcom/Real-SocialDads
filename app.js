@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r21-20261107a'; // same version as index.html, so a phone never mixes old and new files
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r22-20261112b'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -42,7 +42,9 @@ const state = {
 const ui = {
   draft: { date: today(), format: 6, selected: new Set(), teams: null, animate: false, rules: { together: [], apart: [] }, ruleType: 'together', rulePick: new Set() },
   sort: { key: 'wins', dir: -1 },
+  screamer: {}, // match id -> the player an organiser has tapped for the Screamer, before saving
   months: new Map(), // Matches page: which months are open (YYYY-MM -> true/false), while the app is open
+  mfold: new Map(),  // a game's page: which boxes are open ('match id:box' -> true/false), while the app is open
   year: new Date().getFullYear(),
   merge: null,
   style: { draft: freshStyle() },
@@ -162,7 +164,7 @@ function homeHowTo() { // Profile page: always available, with the other phone's
       <button class="${tab === 'ios' ? 'on' : ''}" data-act="home-tab" data-v="ios" aria-pressed="${tab === 'ios'}">iPhone<small>${d.os === 'ios' ? 'your phone' : 'and iPad'}</small></button>
       <button class="${tab === 'android' ? 'on' : ''}" data-act="home-tab" data-v="android" aria-pressed="${tab === 'android'}">Android<small>${d.os === 'android' ? 'your phone' : 'Samsung, Pixel…'}</small></button></div>
     ${mine && d.os === 'android' && installOffer ? '<button class="btn block" data-act="install-app">Install app</button>' : stepsList(tab, mine ? d.browser : tab === 'ios' ? 'safari' : 'chrome')}
-    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}, handy for helping a friend.</p>`}
+    ${mine ? '' : `<p class="muted small-text" style="margin:10px 0 0">Steps for ${tab === 'ios' ? 'Safari on an iPhone' : 'Chrome on Android'}</p>`}
   </section>`;
 }
 
@@ -279,8 +281,12 @@ async function loadAll() {
   state.homeMissing = !!hs.error; // migration_home_screen.sql not run yet
   // Release 2 (migration_release_2.sql): feature switches and the award list. Before the SQL is run,
   // features stay admin-only previews and the standard awards are used.
-  const [fx, aw, seen] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
-    isAdmin() ? sb.from('last_seen').select('user_id, last_at, via, device') : Promise.resolve({ data: null })]);
+  const [fx, aw, seen, gaw] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
+    isAdmin() ? sb.from('last_seen').select('user_id, last_at, via, device') : Promise.resolve({ data: null }),
+    sb.from('match_awards').select('match_id, award, player_id')]);
+  // Release 2.2 (migration_release_2_2.sql): game awards (the Screamer). Before the SQL is run there are none.
+  state.matchAwardsMissing = !!gaw.error;
+  state.matchAwards = gaw.data || [];
   state.seenMissing = !!seen.error;
   state.seen = seen.data ? Object.fromEntries(seen.data.map((r) => [r.user_id, r])) : null; // admins only
   state.featuresMissing = !!fx.error;
@@ -624,9 +630,10 @@ function ballsHTML(n) {
   return `<span class="gl" aria-label="${plural(n, 'goal')}">${inner}</span>`;
 }
 
+const screamerOf = (mid) => (state.matchAwards || []).find((r) => r.match_id === mid && r.award === 'screamer')?.player_id || null;
 const motmWinners = (m) => (m?.motm_closed ? new Set(state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => r.player_id)) : new Set());
 
-function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null, motm = null, links = false } = {}) {
+function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshStyle(), goals = null, motm = null, links = false, screamer = null } = {}) {
   const me = myPlayer()?.id;
   const label = shortNames([...teamA, ...teamB]);
   const half = (team, ids) => {
@@ -638,7 +645,7 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
     const html = shown.map((line) => `<div class="row">${line.map((id) => {
       const p = player(id);
       const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
-      return `<${links ? `a href="#/player/${id}"` : 'div'} class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></${links ? 'a' : 'div'}>`;
+      return `<${links ? `a href="#/player/${id}"` : 'div'} class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${screamer && screamer === id ? '<span class="rk" title="Screamer" aria-label="Screamer">🚀</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></${links ? 'a' : 'div'}>`;
     }).join('')}</div>`).join('');
     return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
   };
@@ -650,6 +657,24 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
 }
 
 /* --------------------------------------------------------------- view: match */
+// A game's boxes fold away like Admin's sections and the months. A box with something for you to do starts open;
+// tap a heading to open or close it, and that's remembered while the app is open. Takes a box as the other functions
+// build it (<section class="card"><h2>Title</h2>…</section>) and returns it as a folding one; a box without a heading
+// (like "Teams are set") stays as it is.
+const TODO_META = '<b class="m-todo">to do</b>';
+function matchFold(m, key, html, meta = '', open = false, force = false) {
+  if (!html) return '';
+  const mt = /^\s*<section class="card([^"]*)"([^>]*)>([\s\S]*?)<h2>([\s\S]*?)<\/h2>([\s\S]*)<\/section>\s*$/.exec(html);
+  if (!mt) return html;
+  const [, cls, attrs, before, title, body] = mt;
+  const k = m.id + ':' + key;
+  const isOpen = force || (ui.mfold.has(k) ? ui.mfold.get(k) : open);
+  return `<details class="card fold mbox${cls}" data-mfold="${k}"${attrs}${isOpen ? ' open' : ''}>
+    <summary><h2>${title}</h2><span class="fold-meta">${meta}</span><i class="chev" aria-hidden="true"></i></summary>
+    <div class="fold-body">${before}${body}</div></details>`;
+}
+const metaJoin = (...parts) => parts.filter(Boolean).map((p) => (p.startsWith('<b') ? p : `<span>${esc(p)}</span>`)).join(' · ');
+
 async function viewMatch(id) {
   const m = state.matches.find((x) => x.id === id);
   if (!m) return `<a class="back" href="#/">← Matches</a><div class="card empty"><h2>Game not found</h2></div>`;
@@ -681,7 +706,7 @@ async function viewMatch(id) {
   const pitch = pitchHTML(A.map((r) => r.player_id), B.map((r) => r.player_id), {
     score: done ? [m.score_a, m.score_b] : null, style: st,
     goals: done ? Object.fromEntries(roster.filter((r) => r.goals_recorded && r.goals > 0).map((r) => [r.player_id, r.goals])) : null,
-    motm: done ? motmWinners(m) : null, links: done && canSee('player_cards'),
+    motm: done ? motmWinners(m) : null, links: done && canSee('player_cards'), screamer: done ? screamerOf(id) : null,
   });
 
   let scoreCard = '';
@@ -712,16 +737,43 @@ async function viewMatch(id) {
 
   let motmCard = '';
   if (done) motmCard = motmSection(m, roster, mine, progress);
-  const rulesCard = rulesSummary(m);
+  let screamerCard = done ? screamerSection(m, roster) : '';
+  let rulesCard = rulesSummary(m);
   let styleCard = '';
   if (org) { ui.style[m.id] ||= matchStyle(m); styleCard = teamStyleCard(m.id, ui.style[m.id], m.id); }
-  const shareCard = shareSection(m);
-  const chaseCard = done && org ? chaseSection(m, roster, waiting) : '';
+  let shareCard = shareSection(m);
+  let chaseCard = done && org ? chaseSection(m, roster, waiting) : '';
+
+  // fold each box: a short summary on the right, and open if there's something for you to do
+  {
+    const total = (Number(m.score_a) || 0) + (Number(m.score_b) || 0);
+    const logged = roster.filter((r) => r.goals_recorded).reduce((s, r) => s + (Number(r.goals) || 0), 0);
+    const myGoals = done && mine && !mine.goals_recorded;
+    const myVote = done && mine && !m.motm_closed && !state.ballots.has(id);
+    const winners = [...motmWinners(m)].map(pname);
+    const motmMeta = m.motm_closed ? (winners.length ? winners.join(', ') : 'No votes')
+      : myVote ? TODO_META : mine && state.ballots.has(id) ? 'Your vote is in'
+      : progress ? `${progress.voted} of ${progress.eligible} voted` : '';
+    const cur = done ? screamerOf(id) : null;
+    const scrMeta = cur ? pname(cur) : canManage(m) ? (state.matchAwardsMissing ? 'needs an update' : 'Optional') : '';
+    const r = matchRules(m);
+    const nRules = (r?.together?.length || 0) + (r?.apart?.length || 0);
+    const member = (pid) => !!player(pid)?.profile_id;
+    const gTodo = roster.filter((x) => !x.goals_recorded && member(x.player_id)).length, vTodo = (waiting || []).length;
+    chaseCard = matchFold(m, 'chase', chaseCard, metaJoin(gTodo ? `${gTodo} to add goals` : '', vTodo ? `${vTodo} to vote` : ''), true);
+    shareCard = matchFold(m, 'share', shareCard, 'WhatsApp', !done);
+    rulesCard = matchFold(m, 'rules', rulesCard, plural(nRules, 'rule'));
+    scoreCard = matchFold(m, 'score', scoreCard, done ? `${m.score_a}–${m.score_b}` : TODO_META, !done);
+    goalsCard = matchFold(m, 'goals', goalsCard, myGoals ? TODO_META : total ? `${logged} of ${plural(total, 'goal')}` : 'No goals', myGoals);
+    motmCard = matchFold(m, 'motm', motmCard, metaJoin(motmMeta), myVote);
+    screamerCard = matchFold(m, 'screamer', screamerCard, metaJoin(scrMeta), !!state.matchAwardsMissing);
+    styleCard = matchFold(m, 'style', styleCard);
+  }
 
   const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
-  const editCard = (org && !done) || (admin && done) ? lineupEditCard(m, A, B, st) : '';
+  const editCard = (org && !done) || (admin && done) ? matchFold(m, 'lineup', lineupEditCard(m, A, B, st), '', false, ui.edit?.m === m.id) : '';
   return done
-    ? head + pitch + chaseCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + editCard + styleCard + del
+    ? head + pitch + chaseCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + screamerCard + editCard + styleCard + del
     : head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
@@ -822,6 +874,7 @@ function shareText(m) {
   if (m.status === 'completed') t += `Final score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}\n\n`;
   const mw = [...motmWinners(m)].map(pname);
   if (mw.length) t += `⭐ Man of the match: ${mw.join(' & ')}\n\n`;
+  if (m.status === 'completed' && screamerOf(m.id)) t += `🚀 Screamer: ${pname(screamerOf(m.id))}\n\n`;
   t += `${pal(st.A.colour).emoji} *${tName(st, 'A')}*\n${list('A')}\n\n${pal(st.B.colour).emoji} *${tName(st, 'B')}*\n${list('B')}\n\n${lineupUrl(m)}`;
   return t;
 }
@@ -1008,6 +1061,7 @@ function shareCaption(m) {
   if (m.status === 'completed') t += `\nFinal score: ${tName(st, 'A')} ${m.score_a} – ${m.score_b} ${tName(st, 'B')}`;
   const mw = [...motmWinners(m)].map(pname);
   if (mw.length) t += `\n⭐ Man of the match: ${mw.join(' & ')}`;
+  if (m.status === 'completed' && screamerOf(m.id)) t += `\n🚀 Screamer: ${pname(screamerOf(m.id))}`;
   return `${t}\n\n${lineupUrl(m)}`;
 }
 
@@ -1049,6 +1103,28 @@ function goalRow(r, m) {
        <button class="btn small" data-act="save-goals" data-m="${m.id}" data-pid="${r.player_id}">Save</button>`
     : `<span class="goalsval">${r.goals_recorded ? r.goals : '–'}</span>`;
   return `<li>${disc(p)}<div class="who">${esc(p?.name)}${isMe ? '<small>You</small>' : (!p?.profile_id ? '<small>Guest</small>' : '')}</div>${right}</li>`;
+}
+
+// The Screamer: an optional game award the organiser who drew the game (or an admin) gives to one player
+// for the goal of the game. No Screamer means nothing is shown and nobody is told.
+function screamerSection(m, roster) {
+  const cur = screamerOf(m.id);
+  if (canManage(m)) {
+    if (state.matchAwardsMissing) {
+      return isAdmin() ? '<section class="card"><h2>🚀 Screamer</h2><p class="small-text warn-note" style="margin:0">The Screamer needs a quick database update: run <b>supabase/migration_release_2_2.sql</b> in the Supabase SQL editor.</p></section>' : '';
+    }
+    const pick = ui.screamer[m.id] || cur;
+    return `<section class="card screamer"><h2>🚀 Screamer</h2>
+      <p class="muted small-text">${cur ? `${esc(pname(cur))} has the Screamer for this game. Pick someone else to change it, or remove it.` : 'Optional: pick the player who scored the goal of the game. If nobody did, just leave it. Nothing is sent and nobody is told.'}</p>
+      <div class="vote-list">${roster.map((r) => {
+        const p = player(r.player_id);
+        return `<button data-act="screamer-pick" data-m="${m.id}" data-pid="${r.player_id}" aria-pressed="${pick === r.player_id}">${disc(p)}<span>${esc(p?.name)}</span></button>`;
+      }).join('')}</div>
+      <div class="btn-row" style="margin:12px 0 0"><button class="btn" data-act="screamer-save" data-m="${m.id}" ${pick && pick !== cur ? '' : 'disabled'}>${cur ? 'Change the Screamer' : 'Give the Screamer'}</button>${cur ? `<button class="btn ghost" data-act="screamer-remove" data-m="${m.id}">Remove</button>` : ''}</div></section>`;
+  }
+  if (!cur) return '';
+  const p = player(cur);
+  return `<section class="card"><h2>🚀 Screamer</h2><ul class="plist"><li>${disc(p)}<div class="who">${canSee('player_cards') ? `<a href="#/player/${cur}">${esc(p?.name)}</a>` : esc(p?.name)}<small>Goal of the game, picked by the organiser</small></div></li></ul></section>`;
 }
 
 function motmSection(m, roster, mine, progress) {
@@ -1230,13 +1306,14 @@ function playerGames(pid, year = null) {
     const f = r.team === 'A' ? m.score_a : m.score_b, a = r.team === 'A' ? m.score_b : m.score_a;
     return { m, r, f, a, res: f > a ? 'W' : f < a ? 'L' : 'D', goals: r.goals_recorded ? r.goals : 0,
       motm: state.motm.some((x) => x.match_id === m.id && x.player_id === pid && x.is_winner),
+      screamer: screamerOf(m.id) === pid,
       votes: state.motm.find((x) => x.match_id === m.id && x.player_id === pid)?.votes || 0 };
   }).filter(Boolean).sort((x, y) => (y.m.played_on > x.m.played_on ? 1 : y.m.played_on < x.m.played_on ? -1 : 0));
 }
 function playerSummary(pid, year = null) {
   const g = playerGames(pid, year);
-  const s = { pid, games: g.length, w: 0, d: 0, l: 0, goals: 0, gf: 0, ga: 0, motm: 0, votes: 0, unbeaten: 0, clean: 0 };
-  g.forEach((x) => { s[x.res.toLowerCase()]++; s.goals += x.goals; s.gf += x.f; s.ga += x.a; s.motm += x.motm ? 1 : 0; s.votes += x.votes; s.clean += x.a === 0 ? 1 : 0; });
+  const s = { pid, games: g.length, w: 0, d: 0, l: 0, goals: 0, gf: 0, ga: 0, motm: 0, votes: 0, unbeaten: 0, clean: 0, screamers: 0 };
+  g.forEach((x) => { s[x.res.toLowerCase()]++; s.goals += x.goals; s.gf += x.f; s.ga += x.a; s.motm += x.motm ? 1 : 0; s.votes += x.votes; s.clean += x.a === 0 ? 1 : 0; s.screamers += x.screamer ? 1 : 0; });
   for (const x of g) { if (x.res === 'L') break; s.unbeaten++; }
   s.winPct = s.games ? Math.round((s.w / s.games) * 100) : 0;
   s.gpg = s.games ? s.goals / s.games : 0;
@@ -1279,6 +1356,7 @@ const MEASURES = {
   goal_diff: { label: 'team goal difference', rate: true, value: (s) => s.gd, fmt: (v) => `${v > 0 ? '+' : ''}${v} goal difference` },
   clean_sheets: { label: 'clean sheets (team let in none)', value: (s) => s.clean, fmt: (v) => plural(v, 'clean sheet') },
   unbeaten: { label: 'current unbeaten run', words: ['Longest', 'Shortest'], value: (s) => s.unbeaten, fmt: (v) => `${v} unbeaten` },
+  screamers: { label: 'Screamers (the organiser\'s goal of the game)', value: (s) => s.screamers, fmt: (v) => `🚀 ${plural(v, 'Screamer')}` },
 };
 // The standard awards (also used before the Release 2 SQL is run, and for "Back to the original").
 const STANDARD_AWARDS = [
@@ -1290,6 +1368,7 @@ const STANDARD_AWARDS = [
   { key: 'sharp', name: 'Sharpshooter', icon: '🎯', description: 'Most goals per game.', measure: 'goals_per_game', direction: 'most', min_games: 5, min_value: 0.01 },
   { key: 'wall', name: 'The Wall', icon: '🧱', description: 'Fewest goals conceded per game by your team.', measure: 'conceded_per_game', direction: 'fewest', min_games: 5, min_value: null },
   { key: 'run', name: 'On Fire', icon: '🔥', description: 'Longest current unbeaten run (3 games or more).', measure: 'unbeaten', direction: 'most', min_games: 0, min_value: 3 },
+  { key: 'screamer', name: 'Screamer', icon: '🚀', description: 'Most screamers: the organiser\'s pick of the goal of the game.', measure: 'screamers', direction: 'most', min_games: 0, min_value: 1 },
 ].map((a, i) => ({ ...a, id: null, builtin: true, enabled: true, sort: (i + 1) * 10 }));
 const awardList = () => state.awards || STANDARD_AWARDS;
 const awardRule = (a) => {
@@ -1321,13 +1400,26 @@ const ballsInline = (n) => (n <= 2 ? '⚽'.repeat(n) : `⚽×${n}`);
 const earlyNote = (n, who) => (n >= SETTLE_GAMES ? '' : `<p class="early-note"><span><b>Early form:</b> based on ${plural(n, 'game')}${who ? ` for ${esc(who)}` : ''} this season. Cards settle after ${SETTLE_GAMES} games.</span>
   <span class="settle" aria-label="${n} of ${SETTLE_GAMES} games"><i style="--p:${Math.min(n, SETTLE_GAMES) / SETTLE_GAMES}" aria-hidden="true"></i>${n} of ${SETTLE_GAMES}</span></p>`);
 
+// The rocket on a player card: how many Screamers this season (nothing at 0, 🚀 at 1, 🚀 x2 and so on).
+// Unlike award chips it shows for everyone who has one, not just the leader; the leader's has a gold edge.
+function rocketChip(n, lead) {
+  if (!n) return '';
+  const label = `${plural(n, 'Screamer')} this season${lead ? ', the most in the group' : ''}`;
+  const inner = `🚀${n > 1 ? `<b>x${n}</b>` : ''}`;
+  return canSee('awards')
+    ? `<a class="award-chip rocket${lead ? ' lead' : ''}" href="#/awards" title="${label}" aria-label="${label}">${inner}</a>`
+    : `<span class="award-chip rocket${lead ? ' lead' : ''}" title="${label}" aria-label="${label}">${inner}</span>`;
+}
+
 function viewPlayer(pid) {
   const p = player(pid);
   if (!p) return '<a class="back" href="#/stats">← Stats</a><div class="card empty"><h2>Player not found</h2></div>';
   const y = ui.year;
   const s = playerSummary(pid, y), all = playerSummary(pid, null);
   const isMe = myPlayer()?.id === pid;
-  const held = canSee('awards') ? awardResults(y).filter((x) => x.holders.includes(pid)) : [];
+  const allHeld = canSee('awards') ? awardResults(y).filter((x) => x.holders.includes(pid)) : [];
+  const held = allHeld.filter((x) => x.a.key !== 'screamer'); // the rocket chip covers the Screamer award
+  const leadsScreamer = allHeld.some((x) => x.a.key === 'screamer');
   const { best, nemesis } = partnerships(pid, y);
   const games = playerGames(pid, y);
   const tile = (v, l) => `<div class="tile"><b>${v}</b><span>${l}</span></div>`;
@@ -1337,7 +1429,7 @@ function viewPlayer(pid) {
   return `<a class="back" href="#/stats">← Stats</a>${previewNote('player_cards')}
   <div class="prof-head">${disc(p)}<div><h1>${esc(p.name)}</h1>
     <p class="muted" style="margin:0">${isMe ? 'You' : p.profile_id ? 'Member' : 'Guest'} · ${plural(all.games, 'game')} all time</p></div></div>
-  ${held.length ? `<div class="award-chips">${held.map((x) => `<a class="award-chip" href="#/awards">${esc(x.a.icon)} ${esc(x.a.name)}${x.provisional ? ' (provisional)' : ''}</a>`).join('')}</div>` : ''}
+  ${held.length || s.screamers ? `<div class="award-chips">${rocketChip(s.screamers, leadsScreamer)}${held.map((x) => `<a class="award-chip" href="#/awards">${esc(x.a.icon)} ${esc(x.a.name)}${x.provisional ? ' (provisional)' : ''}</a>`).join('')}</div>` : ''}
   ${yearPicker()}
   ${s.games ? `${earlyNote(s.games)}<section class="card"><div class="tiles">
       ${tile(s.games, 'Games')}${tile(`${s.w}-${s.d}-${s.l}`, 'W-D-L')}${tile(`${s.winPct}%`, 'Win rate')}
@@ -1349,7 +1441,7 @@ function viewPlayer(pid) {
       const st = matchStyle(x.m);
       return `<li><a class="game-link" href="#/match/${x.m.id}">${resPill(x.res)}<div class="who">${esc(fmtShort(x.m.played_on))} · ${x.f}–${x.a}
         <small>${esc(tName(st, x.r.team))} · ${x.m.format}-a-side</small></div>
-        <span class="gx">${x.goals ? ballsInline(x.goals) : ''}${x.motm ? '<span class="star" aria-label="Man of the match">★</span>' : ''}</span></a></li>`;
+        <span class="gx">${x.goals ? ballsInline(x.goals) : ''}${x.motm ? '<span class="star" aria-label="Man of the match">★</span>' : ''}${x.screamer ? '<span class="rk" aria-label="Screamer">🚀</span>' : ''}</span></a></li>`;
     }).join('')}</ul></section>`
     : `<div class="card empty"><h2>No games in ${y}</h2><p>${esc(p.name)} hasn't played a finished game this season.</p></div>`}`;
 }
@@ -1969,6 +2061,7 @@ const actions = {
         team_a: matchStyle(m).A.name || pal(matchStyle(m).A.colour).label, team_b: matchStyle(m).B.name || pal(matchStyle(m).B.colour).label, score_team_a: m.score_a, score_team_b: m.score_b, drawn_by: drawnBy(m) || null,
         draw_rules: matchRules(m) ? [...(matchRules(m).together || []).map((g) => ruleText('together', g)), ...(matchRules(m).apart || []).map((g) => ruleText('apart', g))] : [],
         man_of_the_match: state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => pname(r.player_id)),
+        screamer: screamerOf(m.id) ? pname(screamerOf(m.id)) : null,
         lineup: rosterOf(m.id).map((r) => ({ player: pname(r.player_id), team: tName(matchStyle(m), r.team), goals: r.goals_recorded ? r.goals : null })),
       })),
       player_stats: state.stats.map(({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm }) => ({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm })),
@@ -2033,6 +2126,35 @@ const actions = {
     });
     const cast = document.querySelector(`button[data-act="cast-vote"][data-m="${matchId}"]`);
     if (cast) cast.disabled = false;
+  },
+  'screamer-pick'(el) {
+    const mid = el.dataset.m;
+    ui.screamer[mid] = el.dataset.pid;
+    // like the vote list: update the buttons in place rather than redrawing the page
+    el.closest('.vote-list')?.querySelectorAll('button[data-act="screamer-pick"]').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+    const give = document.querySelector(`button[data-act="screamer-save"][data-m="${mid}"]`);
+    if (give) give.disabled = el.dataset.pid === screamerOf(mid);
+  },
+  async 'screamer-save'(el) {
+    const mid = el.dataset.m, pid = ui.screamer[mid];
+    if (!pid) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_match_award', { p_match: mid, p_award: 'screamer', p_player: pid });
+      if (error) throw error;
+      delete ui.screamer[mid];
+      toast(`🚀 Screamer: ${pname(pid)}`);
+      await refresh();
+    });
+  },
+  async 'screamer-remove'(el) {
+    const mid = el.dataset.m;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_match_award', { p_match: mid, p_award: 'screamer', p_player: null });
+      if (error) throw error;
+      delete ui.screamer[mid];
+      toast('Screamer removed');
+      await refresh();
+    });
   },
   async 'cast-vote'(el) {
     const pid = ui.choice[el.dataset.m];
@@ -2173,8 +2295,14 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('toggle', (e) => {
   const d = e.target;
   if (d.matches?.('details[data-month]')) { ui.months.set(d.dataset.month, d.open); return; }
+  if (d.matches?.('details[data-mfold]')) { ui.mfold.set(d.dataset.mfold, d.open); return; }
   if (!d.matches?.('details[data-fold]')) return;
   d.open ? ui.fold.add(d.dataset.fold) : ui.fold.delete(d.dataset.fold);
+}, true);
+// a game's box you're working in stays open, even once its "to do" is done (runs before the action redraws the page)
+document.addEventListener('click', (e) => {
+  const d = e.target.closest?.('details[data-mfold]');
+  if (d && d.open && !e.target.closest('summary')) ui.mfold.set(d.dataset.mfold, true);
 }, true);
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');

@@ -151,6 +151,10 @@ Admins give the organiser role in **Admin → Members → Let them draw teams**.
 
 The **Matches** page groups the season's games by month, newest first. The newest month is open, and so is any month with something for you to do (a score to enter, goals to add or a vote); older months fold away under their heading, which shows how many games were played and your own wins, draws and losses. Tap a month to open or close it.
 
+**The Screamer 🚀** is an optional award for the goal of the game. Once the final score is in, the organiser who drew the game (or an admin) can give it to one player on the game page, change it or remove it. If nobody gets it, nothing shows and nobody is told. A Screamer puts a rocket on that player on the pitch and on their player card (🚀 for one this season, 🚀 x2 for two, and so on), and on that game in their list of games. The **Screamer** award on the Awards page and the season picture goes to whoever has the most. Counts start again each season.
+
+On a game's page, each box (Share, Goals, Man of the match, Screamer and so on) folds away like the months and the Admin sections. A box with something for you to do starts open; tap a heading to open or close the rest.
+
 Games and stats run for a **calendar year**. Every game belongs to the year of its date, so on 1 January the Matches and Stats pages start empty for the new season. The numbered year buttons at the top of both pages switch between seasons, and earlier years stay available as an archive (nothing is deleted).
 
 - Stats for a season only count games dated in that year, including goals, goals for/against and man of the match awards.
@@ -350,6 +354,7 @@ Needs `supabase/migration_release_2.sql`.
 
 ## Release history
 
+- **Release 2.2 (12 Nov 2026):** the Screamer 🚀, a game award the organiser gives for the goal of the game, and folding boxes on a game's page. One small SQL file.
 - **Release 2.1 (7 Nov 2026):** the Matches list grouped by month, with older months folded away. App files only.
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
 - **Release 2 (29 Oct 2026; balanced teams added 31 Oct):** balanced or random team draw, player cards (with early-form note), editable awards page (provisional leaders), season picture, Admin → Features switches. Needs `migration_release_2.sql`.

@@ -481,3 +481,17 @@ details.month .card.match { background: none; border: 0; border-radius: 0; margi
 details.month .card.match + .card.match { border-top: 1px solid var(--line); }
 details.month .card.match:last-child { padding-bottom: 2px; }
 details.month .card.match:hover .fmt { text-decoration: underline; text-underline-offset: 3px; }
+/* the Screamer (Release 2.2): rocket on the pitch (bottom right of the circle, clear of the footballs and the star), on games and as a chip */
+.tok .rk { position: absolute; top: 28px; left: calc(50% + 12px); width: 24px; height: 24px; border-radius: 50%; background: #fff; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); display: grid; place-items: center; font-size: 13px; line-height: 1; z-index: 2; }
+@media (min-width: 700px) { .tok .rk { top: 34px; left: calc(50% + 15px); } }
+.gx .rk { font-size: 16px; }
+.award-chip.rocket { border-color: var(--line); gap: 2px; }
+.award-chip.rocket b { font-weight: 700; margin-left: 2px; }
+.award-chip.rocket.lead { border-color: #e0a800; }
+
+/* a game's boxes fold away like Admin's sections and the months (Release 2.2) */
+details.mbox > summary:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+details.mbox > summary h2 { min-width: 0; }
+details.mbox .fold-meta { min-width: 0; overflow-wrap: anywhere; }
+details.mbox .fold-meta > b { white-space: nowrap; }
+details.mbox .fold-body > :first-child { margin-top: 0; }
