@@ -495,3 +495,10 @@ details.mbox > summary h2 { min-width: 0; }
 details.mbox .fold-meta { min-width: 0; overflow-wrap: anywhere; }
 details.mbox .fold-meta > b { white-space: nowrap; }
 details.mbox .fold-body > :first-child { margin-top: 0; }
+
+/* who has the bibs (Release 2.3) */
+.bibs-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-block: 12px; }
+.bibs-card p { margin: 0; flex: 1 1 200px; }
+.bibs-row { display: flex; gap: 8px; align-items: stretch; }
+.bibs-row select { flex: 1; min-width: 0; }
+.bibs-row .btn { flex: none; }

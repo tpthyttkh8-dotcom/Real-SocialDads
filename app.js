@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r22-20261112b'; // same version as index.html, so a phone never mixes old and new files
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r23-20261114a'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -281,9 +281,13 @@ async function loadAll() {
   state.homeMissing = !!hs.error; // migration_home_screen.sql not run yet
   // Release 2 (migration_release_2.sql): feature switches and the award list. Before the SQL is run,
   // features stay admin-only previews and the standard awards are used.
-  const [fx, aw, seen, gaw] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
+  const [fx, aw, seen, gaw, gbib] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
     isAdmin() ? sb.from('last_seen').select('user_id, last_at, via, device') : Promise.resolve({ data: null }),
-    sb.from('match_awards').select('match_id, award, player_id')]);
+    sb.from('match_awards').select('match_id, award, player_id'),
+    sb.from('match_bibs').select('match_id, player_id, by_organiser, set_at')]);
+  // Release 2.3 (migration_release_2_3.sql): who has the bibs. Before the SQL is run, nothing shows.
+  state.bibsMissing = !!gbib.error;
+  state.bibs = gbib.data || [];
   // Release 2.2 (migration_release_2_2.sql): game awards (the Screamer). Before the SQL is run there are none.
   state.matchAwardsMissing = !!gaw.error;
   state.matchAwards = gaw.data || [];
@@ -537,7 +541,7 @@ function viewMatches() {
       <p>${isOrganiser() && ui.year === curYear() ? 'A fresh season. Draw the first teams of the year.' : 'Nothing was played this year.'}</p>
       ${isOrganiser() && ui.year === curYear() ? '<a class="btn" href="#/new">Draw teams</a>' : ''}</div>`;
   }
-  return `<h1>Matches</h1>${homeCard()}${picker}${monthGroups(list)}`;
+  return `<h1>Matches</h1>${homeCard()}${bibsCard()}${picker}${monthGroups(list)}`;
 }
 
 /* ------------------------------------------------------------- matches by month */
@@ -630,6 +634,63 @@ function ballsHTML(n) {
   return `<span class="gl" aria-label="${plural(n, 'goal')}">${inner}</span>`;
 }
 
+// Release 2.3: who has the bibs. One row per finished game; who has them now is the latest finished game with someone recorded.
+const bibsOf = (mid) => (state.bibs || []).find((r) => r.match_id === mid) || null;
+const bibsDate = (d) => dateObj(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+function bibsNow() {
+  const done = state.matches.filter((m) => m.status === 'completed').sort((a, b) => (a.played_on < b.played_on ? 1 : a.played_on > b.played_on ? -1 : 0));
+  const from = done.find((m) => bibsOf(m.id)) || null;
+  return { latest: done[0] || null, from, pid: from ? bibsOf(from.id).player_id : null };
+}
+// Matches page: who has them, and a nudge on the latest game if nobody's said yet (only to people who can say)
+function bibsCard() {
+  if (state.bibsMissing || !state.bibs) return '';
+  const { latest, from, pid } = bibsNow();
+  if (!latest) return '';
+  const me = myPlayer()?.id;
+  const ask = latest !== from && (canManage(latest) || (me && rosterOf(latest.id).some((r) => r.player_id === me)));
+  if (!pid && !ask) return '';
+  const who = pid === me ? 'You have' : `<b>${esc(pname(pid))}</b> has`;
+  return `<section class="card bibs-card"><p>🎽 ${pid ? `${who} the bibs <span class="muted">(after ${esc(bibsDate(from.played_on))})</span>` : 'Who took the bibs home?'}</p>
+    ${ask ? `<a class="btn ghost small" href="#/match/${latest.id}">${pid ? `Who has them after ${esc(bibsDate(latest.played_on))}?` : `Say on the ${esc(bibsDate(latest.played_on))} game`}</a>` : ''}</section>`;
+}
+// A game that hasn't been played yet: who's bringing them
+function bibsNote() {
+  if (state.bibsMissing) return '';
+  const { from, pid } = bibsNow();
+  if (!pid) return '';
+  const mine = pid === myPlayer()?.id;
+  return `<section class="card bibs-card"><p>🎽 ${mine ? 'You have the bibs' : `<b>${esc(pname(pid))}</b> has the bibs`} <span class="muted">(after ${esc(bibsDate(from.played_on))})</span>.
+    ${mine ? 'Don\'t forget to bring them!' : ''}</p></section>`;
+}
+// A finished game: the organiser picks from a dropdown; a player who played can tick it while nobody is recorded
+function bibsSection(m, roster, mine) {
+  if (state.bibsMissing) {
+    return isAdmin() ? '<section class="card"><h2>🎽 Bibs</h2><p class="small-text warn-note" style="margin:0">Who has the bibs needs a quick database update: run <b>supabase/migration_release_2_3.sql</b> in the Supabase SQL editor.</p></section>' : '';
+  }
+  const cur = bibsOf(m.id), me = myPlayer()?.id;
+  if (canManage(m)) {
+    const ids = roster.map((r) => r.player_id).sort((a, b) => pname(a).localeCompare(pname(b)));
+    const note = !cur ? 'Who took them home? Pick them here, or anyone who played can tick it themselves.'
+      : cur.by_organiser ? `${esc(pname(cur.player_id))} has them. Pick someone else to change it.`
+      : `${esc(pname(cur.player_id))} ticked that they have them. Pick someone else to change it.`;
+    return `<section class="card bibs"><h2>🎽 Bibs</h2><p class="muted small-text">${note}</p>
+      <div class="bibs-row"><select id="bibs-${m.id}" aria-label="Who has the bibs">${cur ? '' : '<option value="">Choose who has them</option>'}${ids.map((pid) => `<option value="${pid}"${cur?.player_id === pid ? ' selected' : ''}>${esc(pname(pid))}</option>`).join('')}</select>
+      <button class="btn" data-act="bibs-save" data-m="${m.id}">Save</button></div>
+      ${cur ? `<button class="btn ghost small" style="margin-top:10px" data-act="bibs-clear" data-m="${m.id}">Clear</button>` : ''}</section>`;
+  }
+  if (mine && !cur) {
+    return `<section class="card bibs"><h2>🎽 Bibs</h2><p class="muted small-text">Took the bibs home? Tick it so everyone knows who's bringing them next time.</p>
+      <button class="btn block" data-act="bibs-claim" data-m="${m.id}">🎽 I've got the bibs</button></section>`;
+  }
+  if (!cur) return '';
+  const p = player(cur.player_id);
+  const own = cur.player_id === me;
+  const sub = own ? (cur.by_organiser ? 'That\'s you, picked by the organiser. Bring them next time' : 'That\'s you. Bring them next time') : cur.by_organiser ? 'Picked by the organiser' : 'Ticked it themselves';
+  return `<section class="card bibs"><h2>🎽 Bibs</h2><ul class="plist"><li>${disc(p)}<div class="who">${esc(p?.name)}<small>${sub}</small></div></li></ul>
+    ${own && !cur.by_organiser ? `<button class="btn ghost small" style="margin-top:10px" data-act="bibs-undo" data-m="${m.id}">Undo</button>` : ''}
+    ${mine && !own ? '<p class="muted small-text" style="margin:8px 0 0">Only the organiser can change it now.</p>' : ''}</section>`;
+}
 const screamerOf = (mid) => (state.matchAwards || []).find((r) => r.match_id === mid && r.award === 'screamer')?.player_id || null;
 const motmWinners = (m) => (m?.motm_closed ? new Set(state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => r.player_id)) : new Set());
 
@@ -738,6 +799,7 @@ async function viewMatch(id) {
   let motmCard = '';
   if (done) motmCard = motmSection(m, roster, mine, progress);
   let screamerCard = done ? screamerSection(m, roster) : '';
+  let bibsCardM = done ? bibsSection(m, roster, mine) : bibsNote();
   let rulesCard = rulesSummary(m);
   let styleCard = '';
   if (org) { ui.style[m.id] ||= matchStyle(m); styleCard = teamStyleCard(m.id, ui.style[m.id], m.id); }
@@ -767,14 +829,19 @@ async function viewMatch(id) {
     goalsCard = matchFold(m, 'goals', goalsCard, myGoals ? TODO_META : total ? `${logged} of ${plural(total, 'goal')}` : 'No goals', myGoals);
     motmCard = matchFold(m, 'motm', motmCard, metaJoin(motmMeta), myVote);
     screamerCard = matchFold(m, 'screamer', screamerCard, metaJoin(scrMeta), !!state.matchAwardsMissing);
+    if (done) {
+      const bc = bibsOf(id), canSay = org || !!mine;
+      const isLatest = bibsNow().latest?.id === id;
+      bibsCardM = matchFold(m, 'bibs', bibsCardM, metaJoin(bc ? pname(bc.player_id) : canSay ? 'Who has them?' : ''), !!state.bibsMissing || (!bc && canSay && isLatest));
+    }
     styleCard = matchFold(m, 'style', styleCard);
   }
 
   const del = admin || (org && !done) ? `<p style="margin-top:20px"><button class="btn danger block" data-act="delete-match" data-m="${id}">Delete this game</button>${admin ? '' : '<span class="muted small-text" style="display:block;text-align:center;margin-top:6px">You can delete a game you drew until the final score is added.</span>'}</p>` : '';
   const editCard = (org && !done) || (admin && done) ? matchFold(m, 'lineup', lineupEditCard(m, A, B, st), '', false, ui.edit?.m === m.id) : '';
   return done
-    ? head + pitch + chaseCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + screamerCard + editCard + styleCard + del
-    : head + pitch + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
+    ? head + pitch + chaseCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + screamerCard + bibsCardM + editCard + styleCard + del
+    : head + pitch + bibsCardM + editCard + shareCard + rulesCard + scoreCard + goalsCard + motmCard + styleCard + del;
 }
 
 // Finished game, for admins and the organiser who drew it: who still has to add goals or vote,
@@ -875,6 +942,8 @@ function shareText(m) {
   const mw = [...motmWinners(m)].map(pname);
   if (mw.length) t += `⭐ Man of the match: ${mw.join(' & ')}\n\n`;
   if (m.status === 'completed' && screamerOf(m.id)) t += `🚀 Screamer: ${pname(screamerOf(m.id))}\n\n`;
+  const bib = m.status === 'completed' ? bibsOf(m.id)?.player_id : bibsNow().pid;
+  if (bib && !state.bibsMissing) t += m.status === 'completed' ? `🎽 Bibs: ${pname(bib)} took them home\n\n` : `🎽 Bibs: ${pname(bib)} is bringing them\n\n`;
   t += `${pal(st.A.colour).emoji} *${tName(st, 'A')}*\n${list('A')}\n\n${pal(st.B.colour).emoji} *${tName(st, 'B')}*\n${list('B')}\n\n${lineupUrl(m)}`;
   return t;
 }
@@ -1062,6 +1131,8 @@ function shareCaption(m) {
   const mw = [...motmWinners(m)].map(pname);
   if (mw.length) t += `\n⭐ Man of the match: ${mw.join(' & ')}`;
   if (m.status === 'completed' && screamerOf(m.id)) t += `\n🚀 Screamer: ${pname(screamerOf(m.id))}`;
+  const bib = m.status === 'completed' ? bibsOf(m.id)?.player_id : bibsNow().pid;
+  if (bib && !state.bibsMissing) t += m.status === 'completed' ? `\n🎽 Bibs: ${pname(bib)} took them home` : `\n🎽 Bibs: ${pname(bib)} is bringing them`;
   return `${t}\n\n${lineupUrl(m)}`;
 }
 
@@ -2062,6 +2133,7 @@ const actions = {
         draw_rules: matchRules(m) ? [...(matchRules(m).together || []).map((g) => ruleText('together', g)), ...(matchRules(m).apart || []).map((g) => ruleText('apart', g))] : [],
         man_of_the_match: state.motm.filter((r) => r.match_id === m.id && r.is_winner).map((r) => pname(r.player_id)),
         screamer: screamerOf(m.id) ? pname(screamerOf(m.id)) : null,
+        bibs: bibsOf(m.id) ? pname(bibsOf(m.id).player_id) : null,
         lineup: rosterOf(m.id).map((r) => ({ player: pname(r.player_id), team: tName(matchStyle(m), r.team), goals: r.goals_recorded ? r.goals : null })),
       })),
       player_stats: state.stats.map(({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm }) => ({ season, name, games, wins, draws, losses, goals_for, goals_against, personal_goals, motm })),
@@ -2143,6 +2215,42 @@ const actions = {
       if (error) throw error;
       delete ui.screamer[mid];
       toast(`🚀 Screamer: ${pname(pid)}`);
+      await refresh();
+    });
+  },
+  async 'bibs-save'(el) {
+    const mid = el.dataset.m, pid = document.getElementById('bibs-' + mid)?.value;
+    if (!pid) { toast('Choose who has the bibs'); return; }
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_bibs', { p_match: mid, p_player: pid });
+      if (error) throw error;
+      toast(`🎽 ${pname(pid)} has the bibs`);
+      await refresh();
+    });
+  },
+  async 'bibs-clear'(el) {
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_bibs', { p_match: el.dataset.m, p_player: null });
+      if (error) throw error;
+      toast('Bibs cleared');
+      await refresh();
+    });
+  },
+  async 'bibs-claim'(el) {
+    const me = myPlayer()?.id;
+    if (!me) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_bibs', { p_match: el.dataset.m, p_player: me });
+      if (error) throw error;
+      toast('🎽 You\'ve got the bibs');
+      await refresh();
+    });
+  },
+  async 'bibs-undo'(el) {
+    await busy(el, async () => {
+      const { error } = await sb.rpc('set_bibs', { p_match: el.dataset.m, p_player: null });
+      if (error) throw error;
+      toast('Untick: nobody has the bibs for this game');
       await refresh();
     });
   },

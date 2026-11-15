@@ -155,6 +155,8 @@ The **Matches** page groups the season's games by month, newest first. The newes
 
 On a game's page, each box (Share, Goals, Man of the match, Screamer and so on) folds away like the months and the Admin sections. A box with something for you to do starts open; tap a heading to open or close the rest.
 
+**Who has the bibs** 🎽: after a game, the organiser who drew it (or an admin) picks who took the bibs home from a dropdown on the game, or anyone who played ticks **I've got the bibs**. Once someone is recorded, only the organiser or an admin can change it. Who has them shows at the top of Matches, on the next game and in its WhatsApp text.
+
 Games and stats run for a **calendar year**. Every game belongs to the year of its date, so on 1 January the Matches and Stats pages start empty for the new season. The numbered year buttons at the top of both pages switch between seasons, and earlier years stay available as an archive (nothing is deleted).
 
 - Stats for a season only count games dated in that year, including goals, goals for/against and man of the match awards.
@@ -355,6 +357,7 @@ Needs `supabase/migration_release_2.sql`.
 ## Release history
 
 - **Release 2.2 (12 Nov 2026):** the Screamer 🚀, a game award the organiser gives for the goal of the game, and folding boxes on a game's page. One small SQL file.
+- **Release 2.3** (14 Nov 2026): who has the bibs. One small SQL file.
 - **Release 2.1 (7 Nov 2026):** the Matches list grouped by month, with older months folded away. App files only.
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
 - **Release 2 (29 Oct 2026; balanced teams added 31 Oct):** balanced or random team draw, player cards (with early-form note), editable awards page (provisional leaders), season picture, Admin → Features switches. Needs `migration_release_2.sql`.
