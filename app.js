@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r23-20261114a'; // same version as index.html, so a phone never mixes old and new files
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r24-20261121a'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -12,12 +12,86 @@ const PALETTE = {
   black: { label: 'Black', emoji: '⚫' }, white: { label: 'White', emoji: '⚪' },
 };
 const pal = (k) => PALETTE[k] || PALETTE.blue;
-const freshStyle = () => ({ A: { name: '', colour: 'blue' }, B: { name: '', colour: 'orange' } });
-const matchStyle = (m) => ({
-  A: { name: m.team_a_name || '', colour: PALETTE[m.team_a_colour] ? m.team_a_colour : 'blue' },
-  B: { name: m.team_b_name || '', colour: PALETTE[m.team_b_colour] ? m.team_b_colour : 'orange' },
-});
+const freshStyle = () => ({ A: { name: '', colour: 'blue', badge: null, team: null }, B: { name: '', colour: 'orange', badge: null, team: null }, auto: true });
+const matchStyle = (m) => {
+  const side = (name, colour, badge, dflt) => {
+    const s = { name: name || '', colour: PALETTE[colour] ? colour : dflt, badge: cleanBadge(badge), team: null };
+    const x = savedTeams().find((t) => t.name.toLowerCase() === s.name.trim().toLowerCase() && t.colour === s.colour);
+    if (x) s.team = x.id; // a game saved with a saved team shows it picked when you edit it
+    return s;
+  };
+  return { A: side(m.team_a_name, m.team_a_colour, m.team_a_badge, 'blue'), B: side(m.team_b_name, m.team_b_colour, m.team_b_badge, 'orange') };
+};
 const tName = (st, t) => (st[t].name || '').trim() || pal(st[t].colour).label;
+
+/* ------------------------------------------------- badges: each saved team's (Release 2.4, from TeamSorted 1.1) */
+// A badge is either drawn by the app ({ s: shape, c: colour, c2, p: pattern, t: letters, e: emoji }) or a crest image
+// that ships with the site ({ img: 'boca' }). Each game keeps its own copy, so old games never change.
+const IMG_BADGES = { boca: { label: 'Boca crest', src: 'badges/boca.png' }, river: { label: 'River crest', src: 'badges/river.png' } };
+const BADGE_SHAPES = { // drawn in a 100 x 100 box
+  shield: ['Shield', 'M10 8h80v44c0 24-18 36-40 44C28 88 10 76 10 52z'],
+  circle: ['Circle', 'M50 5a45 45 0 1 0 0 90a45 45 0 1 0 0-90z'],
+  square: ['Square', 'M16 7h68a9 9 0 0 1 9 9v68a9 9 0 0 1-9 9H16a9 9 0 0 1-9-9V16a9 9 0 0 1 9-9z'],
+  diamond: ['Diamond', 'M50 4 96 50 50 96 4 50z'],
+  hex: ['Hexagon', 'M50 4 90 27v46L50 96 10 73V27z'],
+  pennant: ['Pennant', 'M13 6h74v56L50 95 13 62z'],
+};
+const BADGE_PATTERNS = { plain: 'Plain', stripe: 'Stripe', halves: 'Halves', hoop: 'Hoop', sash: 'Sash' };
+const PATTERN_PATH = { stripe: 'M38 0h24v100H38z', halves: 'M50 0h50v100H50z', hoop: 'M0 39h100v24H0z', sash: 'M-5 72 72 -5h26L-5 98z' };
+const BADGE_EMOJI = ['⚽', '🦁', '🦅', '🐺', '🦊', '🐻', '🐝', '🦈', '🐓', '🔥', '⚡', '⭐', '👑', '🚀', '💀', '🌹', '🍺', '🧤'];
+const BADGE_COLOURS = Object.keys(PALETTE);
+const otherColour = (c) => (c === 'white' ? 'black' : 'white');
+function cleanBadge(b) { // anything that isn't a well-formed badge counts as no badge
+  if (!b || typeof b !== 'object') return null;
+  if (b.img) return IMG_BADGES[b.img] ? { img: b.img } : null;
+  if (!BADGE_SHAPES[b.s] || !PALETTE[b.c]) return null;
+  return { s: b.s, c: b.c, c2: PALETTE[b.c2] && b.c2 !== b.c ? b.c2 : null, p: BADGE_PATTERNS[b.p] ? b.p : 'plain', t: String(b.t || '').slice(0, 3).toUpperCase(), e: b.e ? String(b.e).slice(0, 8) : '' };
+}
+const defaultBadge = (name, colour) => ({ s: 'shield', c: colour, c2: null, p: 'plain', t: initials(name || '').replace('?', '').slice(0, 3), e: '' });
+const badgeMark = (b) => { const txt = b.e || b.t; return { txt, y: b.s === 'shield' || b.s === 'pennant' ? 46 : 51, size: b.e ? 46 : txt.length <= 1 ? 54 : txt.length === 2 ? 44 : 33 }; };
+let badgeSeq = 0;
+function badgeSVG(badge, size = 44, cls = '') {
+  const b = cleanBadge(badge); if (!b) return '';
+  if (b.img) return `<img class="bdg bdg-img ${cls}" src="${IMG_BADGES[b.img].src}" width="${size}" height="${size}" alt="" aria-hidden="true" draggable="false">`;
+  const [bg, on] = IMG_COLOURS[b.c], d = BADGE_SHAPES[b.s][1], id = `bdg${++badgeSeq}`, m = badgeMark(b);
+  return `<svg class="bdg ${cls}" width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><path d="${d}" fill="${bg}"/>${
+    b.c2 && b.p !== 'plain' ? `<clipPath id="${id}"><path d="${d}"/></clipPath><path d="${PATTERN_PATH[b.p]}" fill="${IMG_COLOURS[b.c2][0]}" clip-path="url(#${id})"/>` : ''
+    }<path d="${d}" fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="rgba(0,0,0,.4)" stroke-width="1.5" stroke-linejoin="round"/>${
+    m.txt ? `<text x="50" y="${m.y}" text-anchor="middle" dominant-baseline="central" font-family="'Barlow Condensed','Arial Narrow',system-ui,sans-serif" font-weight="800" font-size="${m.size}"${b.e ? '' : ` fill="${on}" stroke="${bg}" stroke-width="7" paint-order="stroke" stroke-linejoin="round"`}>${esc(m.txt)}</text>` : ''}</svg>`;
+}
+// crest images for the shared picture: loaded once, then drawn straight onto the canvas
+const BADGE_IMG = {};
+const badgeImage = (badge) => { const b = cleanBadge(badge); if (!b?.img) return Promise.resolve(null); return (BADGE_IMG[b.img] ||= loadImg(IMG_BADGES[b.img].src).then((i) => { BADGE_IMG[b.img + ':ready'] = i; return i; })); };
+function drawBadge(x, badge, cx, cy, size) { // the same badge on a canvas (shared pictures); false if there's nothing to draw
+  const b = cleanBadge(badge); if (!b) return false;
+  if (b.img) {
+    const i = BADGE_IMG[b.img + ':ready']; if (!i) return false;
+    const k = Math.min(size / i.width, size / i.height), w = i.width * k, h = i.height * k;
+    x.save(); x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; x.drawImage(i, cx - w / 2, cy - h / 2, w, h); x.restore();
+    return true;
+  }
+  const [bg, on] = IMG_COLOURS[b.c], path = new Path2D(BADGE_SHAPES[b.s][1]), m = badgeMark(b);
+  x.save(); x.translate(cx - size / 2, cy - size / 2); x.scale(size / 100, size / 100);
+  x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; x.fillStyle = bg; x.fill(path); x.shadowColor = 'transparent';
+  if (b.c2 && b.p !== 'plain') { x.save(); x.clip(path); x.fillStyle = IMG_COLOURS[b.c2][0]; x.fill(new Path2D(PATTERN_PATH[b.p])); x.restore(); }
+  x.lineJoin = 'round'; x.strokeStyle = '#fff'; x.lineWidth = 5; x.stroke(path);
+  if (m.txt) {
+    x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = `800 ${m.size}px "Barlow Condensed", "Arial Narrow", system-ui, sans-serif`;
+    if (!b.e) { x.strokeStyle = bg; x.lineWidth = 7; x.strokeText(m.txt, 50, m.y + 3); }
+    x.fillStyle = b.e ? '#000' : on; x.fillText(m.txt, 50, m.y + 3);
+  }
+  x.restore(); return true;
+}
+// saved teams (Admin → Teams), and a side's style when one is picked
+const savedTeams = () => (state.teamsMissing ? [] : state.teams || []);
+const teamStyle = (x) => ({ name: x.name, colour: x.colour, badge: cleanBadge(x.badge), team: x.id });
+// New game starts with the first two saved teams (like Boca v River); with fewer than two it starts blank
+function autoStyle() {
+  const t = savedTeams();
+  if (t.length < 2) return freshStyle();
+  const a = t[0], b = t.slice(1).find((x) => x.colour !== a.colour);
+  return b ? { A: teamStyle(a), B: teamStyle(b) } : freshStyle();
+}
 const $app = document.getElementById('app');
 document.title = APP_NAME;
 
@@ -48,6 +122,7 @@ const ui = {
   year: new Date().getFullYear(),
   merge: null,
   style: { draft: freshStyle() },
+  bdg: { team: null }, // Admin → Teams: the team being edited
   choice: {},
   fold: new Set(),   // which folding Admin sections are open
 };
@@ -281,10 +356,16 @@ async function loadAll() {
   state.homeMissing = !!hs.error; // migration_home_screen.sql not run yet
   // Release 2 (migration_release_2.sql): feature switches and the award list. Before the SQL is run,
   // features stay admin-only previews and the standard awards are used.
-  const [fx, aw, seen, gaw, gbib] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
+  const [fx, aw, seen, gaw, gbib, gteam] = await Promise.all([sb.from('app_features').select('key, enabled'), sb.from('awards').select('*').order('sort').order('created_at'),
     isAdmin() ? sb.from('last_seen').select('user_id, last_at, via, device') : Promise.resolve({ data: null }),
     sb.from('match_awards').select('match_id, award, player_id'),
-    sb.from('match_bibs').select('match_id, player_id, by_organiser, set_at')]);
+    sb.from('match_bibs').select('match_id, player_id, by_organiser, set_at'),
+    sb.from('saved_teams').select('id, name, colour, badge, sort').order('sort').order('created_at')]);
+  // Release 2.4 (migration_release_2_4.sql): saved teams with badges. Before the SQL is run, New game works as before.
+  state.teamsMissing = !!gteam.error;
+  state.teams = gteam.data || [];
+  state.teams.forEach((t) => badgeImage(t.badge)); // crest images ready for the shared picture
+  if (ui.style.draft.auto) ui.style.draft = autoStyle();
   // Release 2.3 (migration_release_2_3.sql): who has the bibs. Before the SQL is run, nothing shows.
   state.bibsMissing = !!gbib.error;
   state.bibs = gbib.data || [];
@@ -708,12 +789,13 @@ function pitchHTML(teamA, teamB, { animate = false, score = null, style = freshS
       const i = ids.indexOf(id) * 2 + (team === 'B' ? 1 : 0);
       return `<${links ? `a href="#/player/${id}"` : 'div'} class="tok ${team}${id === me ? ' me' : ''}" style="--i:${i}">${disc(p)}${motm?.has(id) ? '<span class="mo" title="Man of the match" aria-label="Man of the match">★</span>' : ''}${screamer && screamer === id ? '<span class="rk" title="Screamer" aria-label="Screamer">🚀</span>' : ''}${goals ? ballsHTML(goals[id]) : ''}<span class="nm">${esc(label[id])}</span></${links ? 'a' : 'div'}>`;
     }).join('')}</div>`).join('');
-    return `<div class="half ${team} tc-${style[team].colour}"><span class="team-tag">${esc(tName(style, team))}</span>${html}</div>`;
+    const bd = style[team].badge;
+    return `<div class="half ${team} tc-${style[team].colour}">${bd ? `<span class="half-mark" aria-hidden="true">${badgeSVG(bd, 150)}</span>` : ''}<span class="team-tag${bd ? ' has-badge' : ''}">${badgeSVG(bd, 24)}<span class="tt-name">${esc(tName(style, team))}</span></span>${html}</div>`;
   };
   return `<div class="pitch-wrap"><div class="pitch${animate ? ' animate' : ''}" role="img" aria-label="Teams: ${esc(teamA.map((i) => player(i)?.name).join(', '))} versus ${esc(teamB.map((i) => player(i)?.name).join(', '))}">
     <div class="lines"></div><div class="box top"></div><div class="box bot"></div>
     ${half('A', teamA)}${half('B', teamB)}
-    ${score ? `<div class="mid-score"><span class="chip-score tc-${style.A.colour}">${score[0]}</span><span class="dash">–</span><span class="chip-score tc-${style.B.colour}">${score[1]}</span></div>` : ''}
+    ${score ? `<div class="mid-score">${badgeSVG(style.A.badge, 34)}<span class="chip-score tc-${style.A.colour}">${score[0]}</span><span class="dash">–</span><span class="chip-score tc-${style.B.colour}">${score[1]}</span>${badgeSVG(style.B.badge, 34)}</div>` : ''}
   </div></div>`;
 }
 
@@ -1005,6 +1087,10 @@ function drawLineupImage(data) {
   x.strokeRect(W / 2 - 200, top, 400, 120); x.strokeRect(W / 2 - 200, bot - 120, 400, 120);
 
   const halfH = (bot - top) / 2;
+  data.teams.forEach((tm, ti) => { // each team's badge, faint, in the middle of its half
+    if (!tm.badge) return;
+    x.save(); x.globalAlpha = .2; drawBadge(x, tm.badge, W / 2, ti === 0 ? top + halfH / 2 : mid + halfH / 2, Math.min(520, halfH * .8)); x.restore();
+  });
   data.teams.forEach((tm, ti) => {
     const [bg, fg] = IMG_COLOURS[tm.colour] || IMG_COLOURS.blue;
     const rows = ti === 1 ? [...tm.rows].reverse() : tm.rows;
@@ -1052,11 +1138,12 @@ function drawLineupImage(data) {
     });
     // team tag
     const tagY = ti === 0 ? top + 52 : bot - 52;
-    x.font = `700 40px ${FONT}`; const tw = Math.min(x.measureText(tm.name).width + 44, W - 140);
-    x.fillStyle = 'rgba(255,255,255,.9)'; x.beginPath(); x.roundRect(60 - 4, tagY - 30 - 4, tw + 8, 68, 34); x.fill();
-    x.fillStyle = bg; x.beginPath(); x.roundRect(60, tagY - 30, tw, 60, 30); x.fill();
+    const tx = drawBadge(x, tm.badge, 60 + 38, tagY, 84) ? 60 + 90 : 60; // the team's badge, then its name
+    x.font = `700 40px ${FONT}`; const tw = Math.min(x.measureText(tm.name).width + 44, W - 140 - (tx - 60));
+    x.fillStyle = 'rgba(255,255,255,.9)'; x.beginPath(); x.roundRect(tx - 4, tagY - 30 - 4, tw + 8, 68, 34); x.fill();
+    x.fillStyle = bg; x.beginPath(); x.roundRect(tx, tagY - 30, tw, 60, 30); x.fill();
     x.fillStyle = fg; x.textAlign = 'left'; x.textBaseline = 'middle';
-    fit(tm.name, tw - 36, 40, 700, FONT); x.fillText(tm.name, 60 + 22, tagY + 2);
+    fit(tm.name, tw - 36, 40, 700, FONT); x.fillText(tm.name, tx + 22, tagY + 2);
   });
 
   // score in the middle
@@ -1064,6 +1151,7 @@ function drawLineupImage(data) {
     const ca = IMG_COLOURS[data.teams[0].colour] || IMG_COLOURS.blue, cb = IMG_COLOURS[data.teams[1].colour] || IMG_COLOURS.blue;
     pill(W / 2 - 100, mid, String(data.score[0]), ca[0], ca[1], 64);
     pill(W / 2 + 100, mid, String(data.score[1]), cb[0], cb[1], 64);
+    drawBadge(x, data.teams[0].badge, W / 2 - 250, mid, 96); drawBadge(x, data.teams[1].badge, W / 2 + 250, mid, 96);
     x.fillStyle = '#fff'; x.font = `700 60px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('–', W / 2, mid + 2);
   }
   return c;
@@ -1077,6 +1165,7 @@ async function buildLineupImage(m) {
   const done = m.status === 'completed';
   try { await document.fonts?.load(`700 40px "Barlow Condensed"`); await document.fonts?.load(`600 30px Barlow`); } catch { /* fall back to system fonts */ }
   const photos = {};
+  await Promise.all([badgeImage(st.A.badge), badgeImage(st.B.badge)]);
   await Promise.all(ids.map(async (id) => { const u = player(id)?.avatar_url; if (u) photos[id] = await loadImg(u); }));
   const winners = motmWinners(m);
   const make = (usePhotos) => {
@@ -1089,7 +1178,7 @@ async function buildLineupImage(m) {
         goals: done && r.goals_recorded ? r.goals : 0,
         motm: done && winners.has(r.player_id),
       })));
-      return { name: tName(st, t), colour: st[t].colour, rows };
+      return { name: tName(st, t), colour: st[t].colour, badge: st[t].badge, rows };
     };
     return drawLineupImage({
       title: APP_NAME,
@@ -1238,17 +1327,56 @@ function motmSection(m, roster, mine, progress) {
 /* ------------------------------------------------------------ view: new game */
 // Name + colour pickers for the two teams. ctx = 'draft' (new game) or a match id (editing a saved game).
 function teamStyleCard(ctx, st, matchId = null) {
-  const row = (t, title) => `<div class="team-style tc-${st[t].colour}">
-      <div class="ts-head"><i class="tdot"></i><label for="tn-${ctx}-${t}">${title}</label></div>
-      <input type="text" id="tn-${ctx}-${t}" maxlength="24" autocomplete="off" placeholder="${esc(pal(st[t].colour).label)}" value="${esc(st[t].name)}" data-teamname="${t}" data-ctx="${ctx}">
+  const teams = savedTeams();
+  const custom = (t, title) => `<input type="text" id="tn-${ctx}-${t}" maxlength="24" autocomplete="off" placeholder="${esc(pal(st[t].colour).label)}" value="${esc(st[t].name)}" data-teamname="${t}" data-ctx="${ctx}"${teams.length ? ` aria-label="Name for ${title}"` : ''}>
       <div class="swatches" role="group" aria-label="Colour for ${title}">${Object.entries(PALETTE).map(([k, p]) =>
-        `<button type="button" class="sw tc-${k}" data-act="team-colour" data-ctx="${ctx}" data-team="${t}" data-c="${k}" aria-label="${p.label}" aria-pressed="${st[t].colour === k}"><span aria-hidden="true">✓</span></button>`).join('')}</div>
+        `<button type="button" class="sw tc-${k}" data-act="team-colour" data-ctx="${ctx}" data-team="${t}" data-c="${k}" aria-label="${p.label}" aria-pressed="${st[t].colour === k}"><span aria-hidden="true">✓</span></button>`).join('')}</div>`;
+  const pick = (t, title) => `<div class="team-pick" role="group" aria-label="${title}">${teams.map((x) =>
+      `<button type="button" class="tp${st[t].team === x.id ? ' on' : ''}" data-act="pick-team" data-ctx="${ctx}" data-team="${t}" data-id="${x.id}" aria-pressed="${st[t].team === x.id}">${badgeSVG(x.badge, 28) || `<i class="tdot tc-${x.colour}"></i>`}<span>${esc(x.name)}</span></button>`).join('')}
+      <button type="button" class="tp${st[t].team ? '' : ' on'}" data-act="pick-team" data-ctx="${ctx}" data-team="${t}" data-id="" aria-pressed="${!st[t].team}"><span>Other</span></button></div>`;
+  const row = (t, title) => `<div class="team-style tc-${st[t].colour}">
+      <div class="ts-head"><i class="tdot"></i><label${teams.length ? '' : ` for="tn-${ctx}-${t}"`}>${title}</label></div>
+      ${teams.length ? pick(t, title) : ''}${!teams.length || !st[t].team ? custom(t, title) : ''}
     </div>`;
-  return `<section class="card"><h2>Team names &amp; colours</h2>
-    <p class="muted small-text">Just for fun. Leave a name blank to use the colour. Names and colours never affect scores or stats.</p>
+  return `<section class="card"><h2>${teams.length ? 'Teams' : 'Team names &amp; colours'}</h2>
+    <p class="muted small-text">${teams.length ? 'Pick from your saved teams, or <b>Other</b> for a one-off name and colour. They never affect scores or stats.' : 'Just for fun. Leave a name blank to use the colour. Names and colours never affect scores or stats.'}</p>
     ${row('A', 'Team 1 (top of the pitch)')}${row('B', 'Team 2 (bottom)')}
-    ${matchId ? `<button class="btn block" style="margin-top:12px" data-act="save-team-style" data-m="${matchId}">Save names &amp; colours</button>` : ''}
+    ${matchId ? `<button class="btn block" style="margin-top:12px" data-act="save-team-style" data-m="${matchId}">${teams.length ? 'Save teams' : 'Save names &amp; colours'}</button>` : ''}
   </section>`;
+}
+
+// Admin → Teams: the sides the group plays as. Each has a name, a colour (the player circles) and a badge:
+// one of the club crests, or one built here from a shape, colours, a pattern and letters or an emoji.
+function badgeEditor(b) {
+  const sw = (k, cur) => `<div class="swatches">${BADGE_COLOURS.map((c) => `<button type="button" class="sw tc-${c}" data-act="bdg-set" data-k="${k}" data-v="${c}" aria-label="${PALETTE[c].label}" aria-pressed="${cur === c}"><span aria-hidden="true">✓</span></button>`).join('')}</div>`;
+  return `<div class="badge-ed">
+    <div class="be-row"><b>Shape</b><div class="be-opts">${Object.entries(BADGE_SHAPES).map(([k, [label]]) =>
+      `<button type="button" class="be-opt${b.s === k ? ' on' : ''}" data-act="bdg-set" data-k="s" data-v="${k}" aria-label="${label}" aria-pressed="${b.s === k}">${badgeSVG({ ...b, s: k, t: '', e: '' }, 36)}</button>`).join('')}</div></div>
+    <div class="be-row"><b>Pattern</b><div class="be-opts">${Object.entries(BADGE_PATTERNS).map(([k, label]) =>
+      `<button type="button" class="be-opt${b.p === k ? ' on' : ''}" data-act="bdg-set" data-k="p" data-v="${k}" aria-label="${label}" aria-pressed="${b.p === k}">${badgeSVG({ ...b, p: k, c2: b.c2 || otherColour(b.c), t: '', e: '' }, 36)}</button>`).join('')}</div></div>
+    ${b.p !== 'plain' ? `<div class="be-row"><b>Second colour</b>${sw('c2', b.c2)}</div>` : ''}
+    <div class="be-row"><b>On the badge</b><div class="seg two"><button type="button" class="${b.e ? '' : 'on'}" data-act="bdg-set" data-k="mode" data-v="t" aria-pressed="${!b.e}">Letters</button><button type="button" class="${b.e ? 'on' : ''}" data-act="bdg-set" data-k="mode" data-v="e" aria-pressed="${!!b.e}">Emoji</button></div>
+      ${b.e ? `<div class="be-opts be-emoji">${BADGE_EMOJI.map((e) => `<button type="button" class="be-opt${b.e === e ? ' on' : ''}" data-act="bdg-set" data-k="e" data-v="${e}" aria-pressed="${b.e === e}">${e}</button>`).join('')}</div>`
+        : `<input type="text" class="be-text" maxlength="3" value="${esc(b.t)}" data-bdg-text="team" placeholder="Up to 3 letters" aria-label="Letters on the badge, up to 3" autocomplete="off" autocapitalize="characters">`}</div>
+  </div>`;
+}
+const teamPreview = (ed) => badgeSVG(ed.img ? { img: ed.img } : { ...ed.badge, c: ed.colour }, 68) || `<i class="tdot tc-${ed.colour}"></i>`;
+function teamsFold() {
+  if (state.teamsMissing) {
+    return fold('teams', 'Teams', 'Needs a database update', '<p class="small-text warn-note" style="margin:0">Saved teams need a quick database update: run <b>supabase/migration_release_2_4.sql</b> in the Supabase SQL editor.</p>');
+  }
+  const teams = savedTeams(), ed = ui.bdg.team;
+  const editor = ed ? `<div class="team-ed"><h3>${ed.id ? 'Edit team' : 'New team'}</h3>
+      <div class="te-top"><span id="team-prev">${teamPreview(ed)}</span><label class="field" style="flex:1;margin:0"><span>Name</span><input type="text" id="team-name" maxlength="24" value="${esc(ed.name)}" data-team-name autocomplete="off" placeholder="e.g. Bibs"></label></div>
+      <div class="be-row"><b>Colour</b><p class="muted small-text" style="margin:0 0 8px">The player circles on the pitch.</p><div class="swatches">${BADGE_COLOURS.map((c) => `<button type="button" class="sw tc-${c}" data-act="bdg-set" data-k="colour" data-v="${c}" aria-label="${PALETTE[c].label}" aria-pressed="${ed.colour === c}"><span aria-hidden="true">✓</span></button>`).join('')}</div></div>
+      <div class="be-row"><b>Badge</b><div class="be-opts">${Object.entries(IMG_BADGES).map(([k, v]) =>
+        `<button type="button" class="be-opt crest${ed.img === k ? ' on' : ''}" data-act="bdg-set" data-k="img" data-v="${k}" aria-label="${esc(v.label)}" aria-pressed="${ed.img === k}">${badgeSVG({ img: k }, 38)}</button>`).join('')}
+        <button type="button" class="be-opt make${ed.img ? '' : ' on'}" data-act="bdg-set" data-k="img" data-v="" aria-pressed="${!ed.img}">Make one</button></div></div>
+      ${ed.img ? '' : badgeEditor({ ...ed.badge, c: ed.colour })}
+      <div class="btn-row" style="margin:14px 0 0"><button class="btn" data-act="team-save">Save team</button><button class="btn ghost" data-act="team-cancel">Cancel</button>${ed.id ? `<button class="btn danger small" data-act="team-delete" data-id="${ed.id}">Delete</button>` : ''}</div></div>` : '';
+  return fold('teams', 'Teams', esc(teams.length ? plural(teams.length, 'team') : 'None saved'), `<p class="muted small-text">The sides you usually play as. Organisers pick them on New game instead of typing names, and each badge shows on the pitch and the shared picture. Games already saved keep the team they had.</p>
+    ${teams.length ? `<ul class="plist team-list">${teams.map((t) => `<li>${badgeSVG(t.badge, 40) || `<i class="tdot tc-${t.colour}"></i>`}<div class="who">${esc(t.name)}<small>${pal(t.colour).label}</small></div><div class="acts"><button class="btn ghost small" data-act="team-edit" data-id="${t.id}">Edit</button></div></li>`).join('')}</ul>` : ''}
+    ${ed ? editor : teams.length < 12 ? '<button class="btn ghost" data-act="team-edit" data-id="" style="margin-top:8px">Add a team</button>' : '<p class="muted small-text">That\'s the most teams you can save (12).</p>'}`, !!ed);
 }
 
 /* ------------------------------------------------------------ balanced teams */
@@ -1747,6 +1875,7 @@ function viewAdmin() {
     <ul class="plist">${FEATURES.map(([k, name, desc]) => `<li class="wrap feature-row"><div class="who">${name} <span class="badge ${featureLive(k) ? 'win' : ''}">${featureLive(k) ? 'Live' : 'Admins only'}</span><small>${esc(desc)}</small></div>
       <div class="acts"><button class="btn ${featureLive(k) ? 'ghost' : ''} small" data-act="feature" data-k="${k}" data-v="${featureLive(k) ? 0 : 1}" ${state.featuresMissing ? 'disabled' : ''}>${featureLive(k) ? 'Hide from players' : 'Set live'}</button>
       ${k === 'awards' ? '<a class="btn ghost small" href="#/awards/edit">Edit awards</a>' : ''}</div></li>`).join('')}</ul>`)}
+  ${teamsFold()}
   ${fold('rules', 'Draw rules', esc(rulesVis() === 'organisers' ? 'Organisers and admins' : RULES_VIS[rulesVis()][0]), `    <p class="muted small-text">Who can see a game's draw rules (like "Ben and Tom play apart") on the game page once the teams are saved. Organisers always see them while drawing.</p>
     ${state.settingsMissing ? '<p class="small-text warn-note">This setting needs a quick database update: run <b>supabase/migration_rules_visibility.sql</b> in the Supabase SQL editor. Until then everyone can see them, as before.</p>' : ''}
     <div class="seg three" role="group" aria-label="Who can see draw rules">${Object.entries(RULES_VIS).map(([k, [l, sub]]) => `<button class="${rulesVis() === k ? 'on' : ''}" data-act="rules-vis" data-v="${k}" aria-pressed="${rulesVis() === k}" ${state.settingsMissing ? 'disabled' : ''}>${l}<small>${sub}</small></button>`).join('')}</div>
@@ -1878,6 +2007,8 @@ const actions = {
         p_name_b: ui.style.draft.B.name.trim() || null, p_colour_b: ui.style.draft.B.colour,
       });
       if (error) throw error;
+      const ba = cleanBadge(ui.style.draft.A.badge), bb = cleanBadge(ui.style.draft.B.badge);
+      if (!state.teamsMissing && (ba || bb)) await sb.from('matches').update({ team_a_badge: ba, team_b_badge: bb }).eq('id', id);
       ui.draft = { date: today(), format: d.format, selected: new Set(), teams: null, animate: false, rules: { together: [], apart: [] }, ruleType: 'together', rulePick: new Set() };
       ui.style.draft = freshStyle();
       await loadAll();
@@ -2100,6 +2231,62 @@ const actions = {
       await refresh();
     });
   },
+  'pick-team'(el) { // a saved team for this side, or Other for a one-off
+    const st = ui.style[el.dataset.ctx];
+    if (!st) return;
+    const t = el.dataset.team, o = t === 'A' ? 'B' : 'A', x = savedTeams().find((k) => k.id === el.dataset.id);
+    if (!x) { if (st[t].team) st[t] = { name: '', colour: st[t].colour, badge: null, team: null }; return route(true); }
+    if (st[o].team === x.id) { const was = st[t]; st[t] = st[o]; st[o] = was; return route(true); } // picking the other side's team swaps them
+    if (st[o].colour === x.colour) return toast(`${tName(st, o)} are already in ${pal(x.colour).label.toLowerCase()}. Pick a team in another colour.`, true);
+    st[t] = teamStyle(x);
+    route(true);
+  },
+  'bdg-set'(el) { // one choice in the Teams editor
+    const ed = ui.bdg.team; if (!ed) return;
+    const b = ed.badge, k = el.dataset.k, v = el.dataset.v;
+    if (k === 'img') ed.img = v;
+    else if (k === 'mode') b.e = v === 'e' ? b.e || BADGE_EMOJI[0] : '';
+    else if (k === 'p') { b.p = v; if (v !== 'plain' && (!b.c2 || b.c2 === ed.colour)) b.c2 = otherColour(ed.colour); }
+    else if (k === 'c2') { if (v === ed.colour) return toast('Pick a different colour from the main one', true); b.c2 = v; }
+    else if (k === 'colour') { ed.colour = v; b.c = v; if (b.c2 === v) b.c2 = otherColour(v); }
+    else b[k] = v; // shape, emoji
+    route(true);
+  },
+  'team-edit'(el) {
+    const teams = savedTeams(), t = teams.find((x) => x.id === el.dataset.id);
+    if (t) {
+      const cb = cleanBadge(t.badge);
+      ui.bdg.team = { id: t.id, name: t.name, colour: t.colour, img: cb?.img || '', badge: cb && !cb.img ? cb : defaultBadge(t.name, t.colour), auto: false };
+    } else {
+      const used = new Set(teams.map((x) => x.colour)), c = BADGE_COLOURS.find((k) => !used.has(k)) || 'blue';
+      ui.bdg.team = { id: null, name: '', colour: c, img: '', badge: defaultBadge('', c), auto: true };
+    }
+    ui.fold.add('teams'); route(true);
+  },
+  'team-cancel'() { ui.bdg.team = null; route(true); },
+  async 'team-save'(el) {
+    const ed = ui.bdg.team; if (!ed) return;
+    const name = (document.getElementById('team-name')?.value ?? ed.name).trim();
+    if (!name) return toast('Give the team a name', true);
+    const badge = ed.img ? { img: ed.img } : cleanBadge({ ...ed.badge, c: ed.colour });
+    await busy(el, async () => {
+      const { error } = await sb.rpc('save_team', { p_id: ed.id, p_name: name, p_colour: ed.colour, p_badge: badge });
+      if (error) throw error;
+      ui.bdg.team = null;
+      toast('Team saved');
+      await refresh();
+    });
+  },
+  async 'team-delete'(el) {
+    if (!confirm('Delete this team? Games already saved with it keep its name, colour and badge.')) return;
+    await busy(el, async () => {
+      const { error } = await sb.rpc('delete_team', { p_id: el.dataset.id });
+      if (error) throw error;
+      ui.bdg.team = null;
+      toast('Team deleted');
+      await refresh();
+    });
+  },
   'team-colour'(el) {
     const st = ui.style[el.dataset.ctx];
     if (!st) return;
@@ -2115,11 +2302,12 @@ const actions = {
       const { data, error } = await sb.from('matches').update({
         team_a_name: st.A.name.trim() || null, team_a_colour: st.A.colour,
         team_b_name: st.B.name.trim() || null, team_b_colour: st.B.colour,
+        ...(state.teamsMissing ? {} : { team_a_badge: cleanBadge(st.A.badge), team_b_badge: cleanBadge(st.B.badge) }),
       }).eq('id', id).select('id');
       if (error) throw error;
       if (!data?.length) throw new Error('Only the organiser who drew this game (or an admin) can change it');
       delete ui.style[id];
-      toast('Team names and colours saved');
+      toast(savedTeams().length ? 'Teams saved' : 'Team names and colours saved');
       await refresh();
     });
   },
@@ -2418,12 +2606,23 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('input', (e) => {
   const t = e.target;
+  if (t.dataset?.bdgText && ui.bdg.team) { // letters on a badge
+    const ed = ui.bdg.team; ed.badge.t = t.value.toUpperCase().slice(0, 3); ed.auto = false;
+    const p = document.getElementById('team-prev'); if (p) p.innerHTML = teamPreview(ed);
+    return;
+  }
+  if (t.dataset && 'teamName' in t.dataset && ui.bdg.team) { // a saved team's name: its letters follow until you change them
+    const ed = ui.bdg.team; ed.name = t.value;
+    if (ed.auto && !ed.badge.e) { ed.badge.t = initials(t.value).replace('?', '').slice(0, 3); const i = document.querySelector('[data-bdg-text="team"]'); if (i) i.value = ed.badge.t; }
+    const p = document.getElementById('team-prev'); if (p) p.innerHTML = teamPreview(ed);
+    return;
+  }
   if (!t.dataset?.teamname) return;
   const st = ui.style[t.dataset.ctx];
   if (!st) return;
   st[t.dataset.teamname].name = t.value;
   if (t.dataset.ctx === 'draft') { // keep the pitch preview's name tag in step while typing
-    document.querySelectorAll?.(`.half.${t.dataset.teamname} .team-tag`)?.forEach((el) => { el.textContent = tName(st, t.dataset.teamname); });
+    document.querySelectorAll?.(`.half.${t.dataset.teamname} .team-tag .tt-name`)?.forEach((el) => { el.textContent = tName(st, t.dataset.teamname); });
   }
 });
 // Update only the parts of the New game page that depend on the selection, so a tap never
