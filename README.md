@@ -361,6 +361,7 @@ Needs `supabase/migration_release_2.sql`.
 - **Release 2.2 (12 Nov 2026):** the Screamer 🚀, a game award the organiser gives for the goal of the game, and folding boxes on a game's page. One small SQL file.
 - **Release 2.3** (14 Nov 2026): who has the bibs. One small SQL file.
 - **Release 2.4** (21 Nov 2026): saved teams with badges, starting with Boca and River. One small SQL file and a new `badges` folder.
+- **Release 2.4.1** (23 Nov 2026): the badge watermark on the WhatsApp picture is faint on every phone. App files only.
 - **Release 2.1 (7 Nov 2026):** the Matches list grouped by month, with older months folded away. App files only.
 - **Pre-release (21 Oct 2026):** Admin setting for who can see draw rules (everyone / organisers and admins / nobody). Needs `migration_rules_visibility.sql`.
 - **Release 2 (29 Oct 2026; balanced teams added 31 Oct):** balanced or random team draw, player cards (with early-form note), editable awards page (provisional leaders), season picture, Admin → Features switches. Needs `migration_release_2.sql`.

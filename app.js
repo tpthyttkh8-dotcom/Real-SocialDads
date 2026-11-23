@@ -2,7 +2,7 @@
 // Plain ES modules, no build step. Data + GitHub login via Supabase.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, ENABLE_GITHUB } from './config.js';
-import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r24-20261121a'; // same version as index.html, so a phone never mixes old and new files
+import { drawTeams, validateRules, drawBalanced, playerStrengths } from './draw.js?v=r241-20261123a'; // same version as index.html, so a phone never mixes old and new files
 
 // Team names and colours are just for fun: they are stored on each game and never used for stats
 // (stats only know team 'A' / team 'B'). No name or colour chosen = the original Blue v Orange.
@@ -62,17 +62,17 @@ function badgeSVG(badge, size = 44, cls = '') {
 // crest images for the shared picture: loaded once, then drawn straight onto the canvas
 const BADGE_IMG = {};
 const badgeImage = (badge) => { const b = cleanBadge(badge); if (!b?.img) return Promise.resolve(null); return (BADGE_IMG[b.img] ||= loadImg(IMG_BADGES[b.img].src).then((i) => { BADGE_IMG[b.img + ':ready'] = i; return i; })); };
-function drawBadge(x, badge, cx, cy, size) { // the same badge on a canvas (shared pictures); false if there's nothing to draw
+function drawBadge(x, badge, cx, cy, size, flat = false) { // the same badge on a canvas (shared pictures); false if there's nothing to draw. flat: no shadow
   const b = cleanBadge(badge); if (!b) return false;
   if (b.img) {
     const i = BADGE_IMG[b.img + ':ready']; if (!i) return false;
     const k = Math.min(size / i.width, size / i.height), w = i.width * k, h = i.height * k;
-    x.save(); x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; x.drawImage(i, cx - w / 2, cy - h / 2, w, h); x.restore();
+    x.save(); if (!flat) { x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; } x.drawImage(i, cx - w / 2, cy - h / 2, w, h); x.restore();
     return true;
   }
   const [bg, on] = IMG_COLOURS[b.c], path = new Path2D(BADGE_SHAPES[b.s][1]), m = badgeMark(b);
   x.save(); x.translate(cx - size / 2, cy - size / 2); x.scale(size / 100, size / 100);
-  x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; x.fillStyle = bg; x.fill(path); x.shadowColor = 'transparent';
+  if (!flat) { x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 8; x.shadowOffsetY = 3; } x.fillStyle = bg; x.fill(path); x.shadowColor = 'transparent';
   if (b.c2 && b.p !== 'plain') { x.save(); x.clip(path); x.fillStyle = IMG_COLOURS[b.c2][0]; x.fill(new Path2D(PATTERN_PATH[b.p])); x.restore(); }
   x.lineJoin = 'round'; x.strokeStyle = '#fff'; x.lineWidth = 5; x.stroke(path);
   if (m.txt) {
@@ -1089,7 +1089,10 @@ function drawLineupImage(data) {
   const halfH = (bot - top) / 2;
   data.teams.forEach((tm, ti) => { // each team's badge, faint, in the middle of its half
     if (!tm.badge) return;
-    x.save(); x.globalAlpha = .2; drawBadge(x, tm.badge, W / 2, ti === 0 ? top + halfH / 2 : mid + halfH / 2, Math.min(520, halfH * .8)); x.restore();
+    // drawn on its own canvas with no shadow, then copied on faded: the same faint mark on every phone
+    const size = Math.round(Math.min(520, halfH * .8)), off = document.createElement('canvas'); off.width = off.height = size;
+    if (!drawBadge(off.getContext('2d'), tm.badge, size / 2, size / 2, size, true)) return;
+    x.save(); x.globalAlpha = .18; x.drawImage(off, W / 2 - size / 2, (ti === 0 ? top + halfH / 2 : mid + halfH / 2) - size / 2); x.restore();
   });
   data.teams.forEach((tm, ti) => {
     const [bg, fg] = IMG_COLOURS[tm.colour] || IMG_COLOURS.blue;
